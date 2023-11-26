@@ -81,11 +81,7 @@ Contributions to enhance the Course Management System are welcome. Feel free to 
 
 ## Support 💬
 
-For support, email `contact@example.com` or raise an issue on the GitHub repository.
-
-## License 📄
-
-This project is licensed under the MIT License - see the [LICENSE.md](LICENSE) file for details.
+For support, email `202101053@daiict.ac.in` or raise an issue on the GitHub repository.
 
 ## Screenshots 📸
 
