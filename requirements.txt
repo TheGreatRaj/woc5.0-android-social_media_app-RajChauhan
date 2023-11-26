@@ -1,0 +1,14 @@
+# Python version (3.6 or higher)
+python>=3.6
+
+# Django framework
+Django>=3.0
+
+# AWS SDK for Python (Boto3) for AWS integration
+boto3>=X.X.X
+
+# AdminLTE3 (You may need to specify the version you want)
+adminlte3>=X.X.X
+
+# Django Storages for AWS S3 integration (optional, use either boto3 or django-storages[s3])
+# django-storages[s3]>=X.X.X
