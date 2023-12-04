@@ -1,5 +1,10 @@
-
+<div align="center">
+   
 # Course Management System 🎓
+![2](https://github.com/TheGreatRaj/woc5.0-android-social_media_app-RajChauhan/assets/122224886/b8acf334-6f63-4743-b9bc-09950c342d99)
+Elevate learning with streamlined course delivery and dynamic educational engagement.
+
+</div>
 
 ## Description 📝
 
@@ -40,7 +45,7 @@ What sets this system apart is its integration with AWS (Amazon Web Services) da
 
 - Python 3.6 or higher
 - Django
-- SQL & AWS Database
+- SQLite & AWS Database
 - Adminlte3
 - Boto3 (or Django-Storages[s3])
 
@@ -81,12 +86,21 @@ Contributions to enhance the Course Management System are welcome. Feel free to 
 
 ## Support 💬
 
-For support, email `202101053@daiict.ac.in` or raise an issue on the GitHub repository.
+For support, email `202101095@daiict.ac.in` or raise an issue on the GitHub repository.
 
-## Screenshots 📸
+## Preview 📸
+
+
+
+https://github.com/TheGreatRaj/woc5.0-android-social_media_app-RajChauhan/assets/122224886/ecd4d29f-18b4-4702-8e1e-9d0300d9cbb7
+
+
 
 <img width="1341" alt="Screenshot 2023-11-26 at 11 12 24 PM" src="https://github.com/TheGreatRaj/woc5.0-android-social_media_app-RajChauhan/assets/122224886/5a42bc4b-11ce-4a2c-949b-a7d2144d9562">
 
 <img width="1339" alt="Screenshot 2023-11-26 at 11 12 32 PM" src="https://github.com/TheGreatRaj/woc5.0-android-social_media_app-RajChauhan/assets/122224886/4315c596-5601-4603-a1de-0ca29174528c">
+
+## Access the site : (https://academixportal.pythonanywhere.com/)
+![Red Gradient Personal LinkedIn Banner](https://github.com/TheGreatRaj/woc5.0-android-social_media_app-RajChauhan/assets/122224886/73e5f0a0-0b25-4535-b206-94b97833602f)
 
 
