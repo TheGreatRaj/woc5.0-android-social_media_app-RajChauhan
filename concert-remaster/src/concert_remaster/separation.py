@@ -67,8 +67,8 @@ PRESETS: dict[str, Preset] = {
         demucs_shifts=2,
     ),
     "balanced": Preset(
-        description="Mel-Roformer vocals with lighter crowd and reverb models. Good quality, practical on CPU.",
-        crowd=MDX_CROWD,
+        description="Roformer crowd removal and vocals, lighter de-reverb, 2 overlap passes. Practical on CPU.",
+        crowd=ROFORMER_CROWD,
         vocals=MEL_ROFORMER_VOCALS,
         dereverb=VR_DEREVERB,
         denoise=None,
@@ -76,7 +76,7 @@ PRESETS: dict[str, Preset] = {
         six_stem="htdemucs_6s.yaml",
     ),
     "fast": Preset(
-        description="MDX-Net crowd removal and a single Demucs pass. Quick previews on any laptop.",
+        description="MDX-Net crowd removal (aggressive, can take some music with it) and one Demucs pass. Rough previews.",
         crowd=MDX_CROWD,
         vocals=None,
         dereverb=None,

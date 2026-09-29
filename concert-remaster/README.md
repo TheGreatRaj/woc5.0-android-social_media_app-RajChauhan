@@ -91,16 +91,21 @@ print(result.master_path, result.report["master"]["output_lufs"])
 | Preset | Crowd removal | Vocal isolation | Vocal clean-up | Band split |
 | --- | --- | --- | --- | --- |
 | `fast` | MDX-Net Crowd HQ | Demucs (one pass) | none | Demucs |
-| `balanced` (default) | MDX-Net Crowd HQ | Mel-Band Roformer (Kim) | VR DeEcho-DeReverb | Demucs 6-stem / fine-tuned 4-stem |
+| `balanced` (default) | Mel-Band Roformer Crowd | Mel-Band Roformer (Kim) | VR DeEcho-DeReverb | Demucs 6-stem / fine-tuned 4-stem |
 | `best` | Mel-Band Roformer Crowd | BS-Roformer (ViperX 1297) | Mel-Roformer de-reverb + denoise | Demucs, 2 shifts |
+
+The Roformer crowd model matters most. In a test with a known crowd-free version of a simulated
+phone recording, it improved the music from 10.3 dB to 17.5 dB signal-to-distortion. The lighter
+MDX-Net crowd model in `fast` took so much music with the crowd that it scored 3.6 dB, worse than
+doing nothing. Use `fast` for rough previews only.
 
 `--stems 6` (default) gives vocals, drums, bass, guitar, piano and other. `--stems 4` merges guitar and
 piano into "other" using the higher-quality fine-tuned Demucs. `--stems 2` is just vocals + band.
 
-Roformer models are heavy. Measured on a 4-core cloud VM with no GPU, each second of audio took
-about 1.3 s for MDX-Net crowd removal, 0.8 s for VR de-reverb, 6 s for the Mel-Roformer crowd model
-and 18 s for BS-Roformer. A full song on `best` wants a GPU; `balanced` is the practical CPU choice,
-and `--preset fast` is for quick previews. Roformers process audio in overlapping 8-second windows:
+Roformer models are heavy. On a 4-core cloud VM with no GPU, a 30-second clip took under 5
+minutes on `balanced` without the Demucs split. Per second of audio, BS-Roformer at its default 4 overlap
+passes took about 18 s. A full song on `best` wants a GPU; `balanced` is the practical CPU choice,
+and more CPU cores or a GPU (CUDA or Apple Silicon) cut these times substantially. Roformers process audio in overlapping 8-second windows:
 `balanced` uses 2 passes per window, and on a GPU you can raise `--overlap` to 4–8 for a slightly
 cleaner result. For very long recordings, `--chunk-seconds 300` keeps memory in check.
 

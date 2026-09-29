@@ -101,7 +101,7 @@ def remaster(
                 chunk_seconds=settings.chunk_seconds,
                 roformer_overlap=settings.roformer_overlap or preset.roformer_overlap,
                 demucs_shifts=preset.demucs_shifts,
-                log_level=logging.INFO if settings.verbose_models else logging.WARNING,
+                log_level=logging.INFO if settings.verbose_models else logging.ERROR,
                 keep_files=settings.keep_work_files,
             )
         separation = separate_concert(audio, sr, plan, backend, progress)
