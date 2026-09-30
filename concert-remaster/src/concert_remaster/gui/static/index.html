@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Concert Remaster</title>
+  <link rel="icon" href="/static/icon.svg">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <img src="/static/icon.svg" alt="" width="28" height="28">
+        <span>Concert Remaster</span>
+      </div>
+      <div class="topbar-right">
+        <span id="device" class="chip" title="Processing device">…</span>
+        <button id="btn-defaults" class="btn ghost" title="Default settings for new projects">Default settings</button>
+        <button id="btn-new" class="btn primary">New project</button>
+      </div>
+    </header>
+
+    <aside class="sidebar">
+      <div class="sidebar-title">Projects</div>
+      <div id="projects" class="project-list"></div>
+    </aside>
+
+    <main id="main" class="main"></main>
+  </div>
+
+  <dialog id="new-dialog" class="dialog">
+    <form method="dialog" id="new-form">
+      <h2>New project</h2>
+      <p class="muted">Pick a concert recording. MP3, MP4, M4A, WAV, FLAC and most video files work, including multi-hour shows.</p>
+      <label class="field">
+        <span>Recording</span>
+        <div class="row">
+          <input id="new-path" type="text" placeholder="C:\Music\Concert.mp4" required>
+          <button type="button" id="new-browse" class="btn">Browse…</button>
+        </div>
+      </label>
+      <label class="field"><span>Project name</span><input id="new-name" type="text" placeholder="Taken from the file name"></label>
+      <div class="field">
+        <span>Quality</span>
+        <div id="new-presets" class="preset-cards"></div>
+      </div>
+      <div class="grid2">
+        <label class="field"><span>Artist (helps identify songs)</span><input id="new-artist" type="text" placeholder="e.g. Arijit Singh"></label>
+        <label class="field"><span>Show type</span>
+          <select id="new-mode">
+            <option value="auto">Automatic</option>
+            <option value="breaks">Band: songs with breaks</option>
+            <option value="continuous">DJ / EDM set: continuous</option>
+          </select>
+        </label>
+      </div>
+      <label class="field"><span>When the artist talks</span>
+        <select id="new-speech">
+          <option value="enhance">Keep it, with a clearer voice</option>
+          <option value="keep">Keep it as it is</option>
+          <option value="remove">Cut the talking out (pure concert vibes)</option>
+          <option value="music_only">Mute the voice, keep the music under it</option>
+        </select>
+      </label>
+      <div class="dialog-actions">
+        <button value="cancel" class="btn ghost">Cancel</button>
+        <button id="new-start" value="start" class="btn primary">Start analysis</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="settings-dialog" class="dialog wide">
+    <div class="settings-head">
+      <h2 id="settings-title">Settings</h2>
+      <div class="row">
+        <select id="settings-preset" title="Load a quality preset into the AI model settings"></select>
+        <button id="settings-reset" class="btn ghost">Reset all</button>
+      </div>
+    </div>
+    <div class="settings-body">
+      <nav id="settings-tabs" class="tabs"></nav>
+      <div id="settings-panel" class="settings-panel"></div>
+    </div>
+    <div class="dialog-actions">
+      <label class="check"><input type="checkbox" id="settings-as-default"> Also use for new projects</label>
+      <span class="spacer"></span>
+      <button id="settings-cancel" class="btn ghost">Cancel</button>
+      <button id="settings-save" class="btn primary">Save</button>
+    </div>
+  </dialog>
+
+  <div id="toast" class="toast" role="status"></div>
+  <audio id="player" preload="none"></audio>
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>

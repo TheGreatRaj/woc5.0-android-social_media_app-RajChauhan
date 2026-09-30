@@ -67,13 +67,20 @@ class Transcriber:
                     device = "cpu"
             compute = "float16" if device == "cuda" else "int8"
             self.model_dir.mkdir(parents=True, exist_ok=True)
-            try:
-                self._model = WhisperModel(self.model_name, device=device, compute_type=compute, download_root=str(self.model_dir))
-            except Exception as exc:
-                if device != "cuda":
-                    raise
-                log.warning("Whisper on the GPU failed (%s); using the CPU", exc)
-                self._model = WhisperModel(self.model_name, device="cpu", compute_type="int8", download_root=str(self.model_dir))
+            # Local copy first (instant, works offline), then download if it isn't there yet.
+            attempts = [(device, compute, True), (device, compute, False)]
+            if device == "cuda":
+                attempts += [("cpu", "int8", True), ("cpu", "int8", False)]
+            error: Exception | None = None
+            for dev, comp, offline in attempts:
+                try:
+                    self._model = WhisperModel(self.model_name, device=dev, compute_type=comp,
+                                               download_root=str(self.model_dir), local_files_only=offline)
+                    break
+                except Exception as exc:  # no internet, no CUDA libraries, ...
+                    error = exc
+            if self._model is None:
+                raise RuntimeError(f"Could not load Whisper '{self.model_name}': {error}. Run setup.bat to download it.")
         return self._model
 
     def segments(self, audio: np.ndarray, sample_rate: int, offset: float = 0.0) -> list[dict]:
