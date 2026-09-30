@@ -6,6 +6,8 @@ Every segment of the show becomes a *piece*:
   original when one was found, auto-mixed and mastered;
 * the artist's talk is enhanced, kept, reduced to the music under it, or cut;
 * applause is kept, shortened or cut;
+* stage effects (CO2 jets, fireworks, confetti) are cleaned out of every
+  stem, and the song's level is kept steady;
 * long silences are trimmed.
 
 Pieces are rendered one at a time and stored on disk, then streamed into the
@@ -32,6 +34,7 @@ import numpy as np
 
 from .analysis import db_to_gain, integrated_lufs
 from .audio_io import SAMPLE_RATE, OutputWriter, StemWriter, read_stem, resample, stem_frames
+from .effects import EffectEvent, repair, ride_curve
 from .engine import Cancelled, Project
 from .mastering import limit, master
 from .mixing import auto_balance, sum_stems
@@ -164,13 +167,36 @@ def _read(project: Project, name: str, start: int, stop: int) -> np.ndarray | No
     return read_stem(project.stem_path(name), start, stop) if project.has_stem(name) else None
 
 
+_EFFECT_AMOUNT = {"remove": 1.0, "reduce": 0.5, "keep": 0.0}
+
+
+def _effects(project: Project, settings: Settings, start: int, stop: int) -> tuple[list[EffectEvent], float]:
+    """Stage effects inside ``start``..``stop`` (times relative to it) and how much to take out."""
+    amount = _EFFECT_AMOUNT.get(settings.effects.action, 1.0)
+    if amount <= 0:
+        return [], 0.0
+    lo, hi = start / SR, stop / SR
+    events = [EffectEvent(e["kind"], max(0.0, e["start"] - lo), min(hi, e["end"]) - lo, e["strength_db"])
+              for e in project.state.get("effects") or [] if e["end"] > lo and e["start"] < hi]
+    return events, amount
+
+
+def _clean_crowd(crowd: np.ndarray | None, events: list[EffectEvent], amount: float) -> np.ndarray | None:
+    # The effects live mostly in the crowd stem; hold it at the audience's own level through them.
+    return repair(crowd, SR, events, amount) if crowd is not None and events else crowd
+
+
 def _render_song(project: Project, seg: dict, names: list[str], settings: Settings, guide: ReferenceGuide | None,
                  cutoff: float | None, start: int, stop: int):
     stems = {n: _read(project, n, start, stop) for n in names if n not in settings.mix.muted_stems}
     stems = {n: a for n, a in stems.items() if a is not None}
+    events, amount = _effects(project, settings, start, stop)
+    raw_crowd = _read(project, "crowd", start, stop) if events or settings.crowd.keep_in_songs else None
     processed: dict[str, np.ndarray] = {}
     tone = {}
     for name, audio in stems.items():
+        if events:
+            audio = repair(audio, SR, events, amount, reference=raw_crowd)
         x = process_stem(audio, SR, profile_for(name, settings.stems))
         if cutoff and name in _BRIGHT:
             x = restore_highs(x, SR, cutoff, settings.restoration.bandwidth_amount)
@@ -207,7 +233,7 @@ def _render_song(project: Project, seg: dict, names: list[str], settings: Settin
                            user_gains_db={**settings.mix.stem_gains_db, **(seg.get("stem_gains") or {})}, profiles=profiles)
     gains = dict(balance.gains_db)
 
-    crowd = _read(project, "crowd", start, stop) if settings.crowd.keep_in_songs else None
+    crowd = _clean_crowd(raw_crowd, events, amount) if settings.crowd.keep_in_songs else None
     if crowd is not None and balance.reference is not None:
         crowd = process_stem(crowd, SR, profile_for("crowd", settings.stems))
         level = integrated_lufs(crowd, SR)
@@ -216,6 +242,10 @@ def _render_song(project: Project, seg: dict, names: list[str], settings: Settin
             processed["crowd"] = crowd
             gains["crowd"] = ref_level + settings.crowd.in_songs_db - level
 
+    riding = 0.0
+    if settings.effects.level_riding and settings.effects.riding_range_db > 0:
+        curve, riding = ride_curve(sum_stems(processed, gains), SR, range_db=settings.effects.riding_range_db)
+        processed = {n: (x * curve[None, : x.shape[-1]]).astype(np.float32) for n, x in processed.items()}
     mix = sum_stems(processed, gains)
     m = settings.master
     use_ref = guide is not None and settings.reference.tone_match
@@ -235,6 +265,8 @@ def _render_song(project: Project, seg: dict, names: list[str], settings: Settin
         "empty_stems": balance.ghosts,
         "reference": guide.title if guide else None,
         "tone_matched_stems": sorted(tone),
+        "effects_cleaned": [e.as_dict() for e in events],
+        "level_riding_db": round(riding, 2),
     }
     return mastered, balanced, info
 
@@ -256,7 +288,7 @@ def _render_talk(project: Project, seg: dict, names: list[str], settings: Settin
     target = settings.master.target_lufs + settings.speech.level_lu
     voice = _voice(project, start, stop)
     band = _band(project, names, start, stop)
-    crowd = _read(project, "crowd", start, stop)
+    crowd = _clean_crowd(_read(project, "crowd", start, stop), *_effects(project, settings, start, stop))
     layers: list[np.ndarray] = []
     stems: dict[str, np.ndarray] = {}
     voice_level = None
@@ -287,8 +319,12 @@ def _render_talk(project: Project, seg: dict, names: list[str], settings: Settin
 
 
 def _render_ambience(project: Project, names: list[str], settings: Settings, start: int, stop: int, level_db: float):
-    parts = [_read(project, n, start, stop) for n in (*names, "crowd")]
-    parts = [p for p in parts if p is not None]
+    events, amount = _effects(project, settings, start, stop)
+    raw_crowd = _read(project, "crowd", start, stop)
+    parts = [_read(project, n, start, stop) for n in names]
+    parts = [p if not events else repair(p, SR, events, amount, reference=raw_crowd) for p in parts if p is not None]
+    crowd = _clean_crowd(raw_crowd, events, amount)
+    parts += [crowd] if crowd is not None else []
     if not parts:
         return None, None, {}
     audio = np.sum(parts, axis=0)

@@ -114,8 +114,26 @@ class Job:
             key_file.write_text(key)
         segments = segment(features, project.settings.segmentation, project.duration)
         project.update(lambda state: state.__setitem__("segments", segments))
+        self.detect_effects(report)
         report("segments", 1.0, f"Found {sum(s['kind'] == 'song' for s in segments)} songs")
         return segments
+
+    def detect_effects(self, report=None) -> list[dict]:
+        """Find CO2 jets, fireworks and confetti cannons across the show (from the crowd stem)."""
+        from .effects import detect_in_file
+
+        project = self.project
+        s = project.settings.effects
+        kinds = {k for k, on in (("co2", s.co2), ("firework", s.fireworks), ("confetti", s.confetti)) if on}
+        if not project.has_stem("crowd") or not kinds:
+            events = []
+        else:
+            events = [e.as_dict() for e in detect_in_file(
+                project.stem_path("crowd"), s.sensitivity, kinds,
+                progress=lambda f: report and report("segments", 0.8 + 0.2 * f, "Listening for fireworks, CO2 and confetti"),
+            )]
+        project.update(lambda state: state.__setitem__("effects", events))
+        return events
 
     def identify(self, base: float = 0.0, only: list[str] | None = None) -> None:
         project = self.project

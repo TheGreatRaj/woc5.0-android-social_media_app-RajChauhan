@@ -355,6 +355,46 @@ def artist_catalog(artist: str, root: Path | None = None, limit: int = 100, prog
     return library
 
 
+def network_catalog(artist: str, root: Path | None = None, related: int = 15, per_artist: int = 25,
+                    progress=lambda message: None, fetch: bool = True) -> "ReferenceLibrary":
+    """The artist's songs plus the top songs of related artists (from Deezer).
+
+    DJ and festival sets are mostly other people's tracks, usually from the same
+    scene; this catalog covers a large part of a typical set without Shazam.
+    """
+    slug = re.sub(r"[^a-z0-9]+", "-", artist.lower()).strip("-") or "artist"
+    library = ReferenceLibrary((root or references_dir()) / "networks" / slug)
+    if not fetch or (library.entries and library.index_path.stat().st_mtime > time.time() - 30 * 86400):
+        return library
+    found: dict[str, Candidate] = {}
+    try:
+        hits = _get_json("https://api.deezer.com/search/artist?" + urllib.parse.urlencode({"q": artist, "limit": 1})).get("data", [])
+        if hits:
+            ids = [(hits[0]["id"], hits[0]["name"], per_artist * 2)]
+            for r in _get_json(f"https://api.deezer.com/artist/{hits[0]['id']}/related?limit={related}").get("data", []):
+                ids.append((r["id"], r["name"], per_artist))
+            for artist_id, name, limit in ids:
+                progress(f"Listing songs by {name}")
+                for r in _get_json(f"https://api.deezer.com/artist/{artist_id}/top?limit={limit}").get("data", []):
+                    if r.get("preview"):
+                        found.setdefault(f"{r.get('artist', {}).get('name', '')}|{_song_key(r.get('title', ''))}",
+                                         Candidate(r.get("title", ""), r.get("artist", {}).get("name", ""), "deezer",
+                                                   r["preview"], float(r.get("duration", 0)), preview=True))
+    except Exception as exc:
+        log.info("Deezer network failed: %s", exc)
+    for i, cand in enumerate(found.values(), 1):
+        key = "net-" + hashlib.sha1(cand.url.encode()).hexdigest()[:16]
+        if key in library.entries:
+            continue
+        progress(f"Fetching songs from {artist}'s scene ({i}/{len(found)}): {cand.artist} - {cand.title}")
+        try:
+            path = download(cand, library.root / "previews")
+            library.add(Reference(key, cand.title, cand.artist, str(path), cand.source, cand.duration, True, cand.url))
+        except Exception as exc:
+            log.info("Skipping %s: %s", cand.title, exc)
+    return library
+
+
 def _song_key(title: str) -> str:
     """Group versions of one song: 'Tum Hi Ho (From "Aashiqui 2")' -> 'tum hi ho'."""
     return re.sub(r"\s+", " ", re.sub(r"[\(\[].*?[\)\]]|[^\w\s]", " ", title.lower())).strip()

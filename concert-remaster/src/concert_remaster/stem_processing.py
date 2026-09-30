@@ -66,7 +66,7 @@ PROFILES: dict[str, StemProfile] = {
         attack_ms=5.0,
         release_ms=90.0,
         deess=True,
-        reverb=0.12,
+        reverb=0.08,
         balance_db=0.0,
     ),
     "drums": StemProfile(
@@ -164,7 +164,7 @@ PROFILES: dict[str, StemProfile] = {
         deess=True,
         width=1.5,
         widen_mono=True,
-        reverb=0.18,
+        reverb=0.12,
         balance_db=-7.0,
     ),
     # Used when the band isn't split further (the "fast" presets or --stems 2).

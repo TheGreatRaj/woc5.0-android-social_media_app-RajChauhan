@@ -131,6 +131,21 @@ class SpeechSettings:
 
 
 @dataclass
+class EffectsSettings:
+    action: str = param("remove", "Stage effects", choices=["remove", "reduce", "keep"],
+                        help="CO2 / smoke jets, fireworks and confetti cannons. remove = clean them out of the music, "
+                        "reduce = halfway, keep = leave them in.")
+    sensitivity: float = param(0.5, "Detection sensitivity", min=0, max=1, step=0.05,
+                               help="Higher catches quieter effects, but may mistake a noise sweep in the music for one.")
+    co2: bool = param(True, "CO2 / smoke jets")
+    fireworks: bool = param(True, "Fireworks and pyro booms")
+    confetti: bool = param(True, "Confetti cannons")
+    level_riding: bool = param(True, "Keep the level steady",
+                               help="Evens out dips and bumps (a phone's auto-gain, removed effects) without flattening builds and drops.")
+    riding_range_db: float = param(4.0, "Level riding range", unit="dB", min=0, max=10, step=0.5)
+
+
+@dataclass
 class CrowdSettings:
     keep_in_songs: bool = param(False, "Keep audience during songs")
     in_songs_db: float = param(-18.0, "Audience level in songs", unit="LU", min=-40, max=0, step=1,
@@ -164,11 +179,11 @@ class IdentifySettings:
 @dataclass
 class ReferenceSettings:
     tone_match: bool = param(True, "Match the studio version's tone")
-    tone_strength: float = param(0.7, "Tone match strength", min=0, max=1, step=0.05)
+    tone_strength: float = param(0.5, "Tone match strength", min=0, max=1, step=0.05)
     tone_max_db: float = param(6.0, "Tone match limit", unit="dB", min=1, max=12, step=0.5)
     per_stem: bool = param(True, "Match each instrument separately", help="Separates the studio track too and matches stem by stem.")
     balance_match: bool = param(True, "Match the studio mix balance")
-    balance_strength: float = param(0.7, "Balance match strength", min=0, max=1, step=0.05)
+    balance_strength: float = param(0.5, "Balance match strength", min=0, max=1, step=0.05)
 
 
 @dataclass
@@ -188,8 +203,8 @@ class MasterSettings:
     ceiling_dbtp: float = param(-1.0, "True-peak ceiling", unit="dBTP", min=-3, max=0, step=0.1)
     max_limiting_db: float = param(6.0, "Most limiting allowed", unit="dB", min=0, max=12, step=0.5)
     glue: bool = param(True, "Bus glue compression")
-    glue_depth_db: float = param(6.0, "Glue depth", unit="dB", min=0, max=15, step=0.5)
-    tonal_strength: float = param(0.5, "Tonal balance EQ", min=0, max=1, step=0.05,
+    glue_depth_db: float = param(4.0, "Glue depth", unit="dB", min=0, max=15, step=0.5)
+    tonal_strength: float = param(0.4, "Tonal balance EQ", min=0, max=1, step=0.05,
                                   help="Used when no studio reference was found.")
     same_loudness_all_songs: bool = param(True, "Same loudness for every song")
 
@@ -214,6 +229,7 @@ class Settings:
     restoration: RestorationSettings = field(default_factory=RestorationSettings)
     segmentation: SegmentationSettings = field(default_factory=SegmentationSettings)
     speech: SpeechSettings = field(default_factory=SpeechSettings)
+    effects: EffectsSettings = field(default_factory=EffectsSettings)
     crowd: CrowdSettings = field(default_factory=CrowdSettings)
     identify: IdentifySettings = field(default_factory=IdentifySettings)
     reference: ReferenceSettings = field(default_factory=ReferenceSettings)
@@ -229,6 +245,7 @@ GROUP_LABELS = {
     "restoration": "Restoration",
     "segmentation": "Songs & speech detection",
     "speech": "Artist speech",
+    "effects": "Stage effects & level",
     "crowd": "Audience",
     "identify": "Song identification",
     "reference": "Studio reference",
@@ -269,6 +286,47 @@ PRESETS: dict[str, dict] = {
         },
     },
 }
+
+
+# Sound styles set several mix/master choices at once; every value stays editable.
+STYLES: dict[str, dict] = {
+    "soundboard": {
+        "description": "Like the mixing desk's own recording: clean and direct, audience out, gentle mastering.",
+        "crowd": {"keep_in_songs": False, "between_songs": "shorten"},
+        "reference": {"tone_strength": 0.5, "balance_strength": 0.5},
+        "master": {"target_lufs": -14.0, "glue_depth_db": 4.0, "tonal_strength": 0.4},
+        "stems": {"vocals": {"reverb": 0.08}, "lead_vocals": {"reverb": 0.08}, "backing_vocals": {"reverb": 0.12}},
+    },
+    "studio": {
+        "description": "Closest to the released record: strong tone matching, polished and louder.",
+        "crowd": {"keep_in_songs": False, "between_songs": "remove"},
+        "reference": {"tone_strength": 0.85, "balance_strength": 0.8},
+        "master": {"target_lufs": -11.0, "glue_depth_db": 6.0, "tonal_strength": 0.6},
+        "stems": {"vocals": {"reverb": 0.12}, "lead_vocals": {"reverb": 0.12}, "backing_vocals": {"reverb": 0.18}},
+    },
+    "live_album": {
+        "description": "A mixed live album: clean band with the audience kept in, applause between songs.",
+        "crowd": {"keep_in_songs": True, "in_songs_db": -16.0, "between_songs": "keep", "between_level_db": -6.0},
+        "reference": {"tone_strength": 0.5, "balance_strength": 0.5},
+        "master": {"target_lufs": -12.0, "glue_depth_db": 5.0, "tonal_strength": 0.4},
+        "stems": {"vocals": {"reverb": 0.15}, "lead_vocals": {"reverb": 0.15}, "backing_vocals": {"reverb": 0.2}},
+    },
+}
+
+
+def apply_style(settings: Settings, name: str) -> Settings:
+    if name not in STYLES:
+        raise ValueError(f"Unknown style {name!r}; choose from {', '.join(STYLES)}")
+    for group, values in STYLES[name].items():
+        if group == "description":
+            continue
+        if group == "stems":
+            for stem, changes in values.items():
+                if stem in settings.stems:
+                    settings.stems[stem] = dataclasses.replace(settings.stems[stem], **changes)
+            continue
+        setattr(settings, group, dataclasses.replace(getattr(settings, group), **values))
+    return settings
 
 
 def apply_preset(settings: Settings, name: str) -> Settings:
@@ -355,6 +413,7 @@ def schema() -> dict:
         "stem_params": stem_params,
         "stem_defaults": {name: profile_to_dict(p) for name, p in PROFILES.items()},
         "presets": {name: p["description"] for name, p in PRESETS.items()},
+        "styles": {name: st["description"] for name, st in STYLES.items()},
     }
 
 
