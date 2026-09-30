@@ -86,6 +86,14 @@ def match_score(live: np.ndarray, reference: np.ndarray) -> tuple[float, int]:
     return float(np.clip(scores[best] - np.median(scores), 0.0, 1.0)), best
 
 
+def profile_similarity(a: np.ndarray, b: np.ndarray) -> float:
+    """Correlation of the overall pitch-class profiles, best over the 12 keys (cheap prefilter)."""
+    pa = a.mean(axis=1) - a.mean()
+    pb = b.mean(axis=1) - b.mean()
+    norm = max(float(np.linalg.norm(pa) * np.linalg.norm(pb)), 1e-12)
+    return max(float(np.dot(pa, np.roll(pb, k))) for k in range(12)) / norm
+
+
 def _centre(chroma: np.ndarray) -> np.ndarray:
     centred = chroma - chroma.mean(axis=0, keepdims=True)
     return centred / np.maximum(np.linalg.norm(centred, axis=0, keepdims=True), 1e-9)
@@ -152,12 +160,18 @@ class ReferenceLibrary:
                 log.warning("Skipping %s: %s", path, exc)
         return added
 
-    def best_match(self, live_signature: np.ndarray, min_score: float) -> tuple[Reference | None, float]:
-        best, best_score = None, 0.0
+    def best_match(self, live_signature: np.ndarray, min_score: float, shortlist: int = 15) -> tuple[Reference | None, float]:
+        """Best library match. A quick key-independent pitch-profile check picks a shortlist
+        first, so a library of thousands of songs still takes seconds."""
+        candidates = []
         for key, entry in self.entries.items():
             sig = self.signature(key)
             if sig is None or not Path(entry["path"]).exists():
                 continue
+            candidates.append((profile_similarity(live_signature, sig), key, entry, sig))
+        candidates.sort(key=lambda c: c[0], reverse=True)
+        best, best_score = None, 0.0
+        for _, key, entry, sig in candidates[:shortlist]:
             score, _ = match_score(live_signature, sig)
             if score > best_score:
                 best, best_score = Reference(**entry), score

@@ -47,6 +47,7 @@ class Job:
         self._backend = backend
         self.on_progress = on_progress
         self.cancel = cancel
+        self.task: str | None = None  # what the app should resume if this run stops
         self.started = time.time()
         self._stage_started: dict[str, float] = {}
 
@@ -66,7 +67,7 @@ class Job:
         self._stage_started.setdefault(stage, now)
         elapsed = now - self._stage_started[stage]
         eta = elapsed * (1 - fraction) / fraction if fraction > 0.01 else None
-        info = {"status": "running", "stage": stage, "stage_label": STAGE_LABELS.get(stage, stage),
+        info = {"status": "running", "task": self.task, "stage": stage, "stage_label": STAGE_LABELS.get(stage, stage),
                 "fraction": round(fraction, 4), "overall": round(overall if overall is not None else fraction, 4),
                 "message": message, "eta_seconds": round(eta) if eta else None, "elapsed_seconds": round(now - self.started)}
         self.project.write_progress(**info)

@@ -8,6 +8,7 @@ stopped job continues where it left off.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import logging
@@ -63,6 +64,7 @@ def open_project(project_id: str) -> Project:
 
 def project_summary(project: Project, jobs: "JobManager") -> dict:
     state = project.state
+    jobs.check_finished(project)
     progress = project.read_progress()
     running = jobs.running_for(project.root.name)
     if not running and progress.get("status") == "running":
@@ -100,6 +102,16 @@ class JobManager:
     def running_for(self, project_id: str) -> bool:
         return self.project_id == project_id and self.is_running()
 
+    def check_finished(self, project: Project) -> None:
+        """If the worker died without reporting (e.g. a driver error at start-up), show why."""
+        if self.project_id != project.root.name or self.proc is None or self.proc.poll() is None:
+            return
+        progress = project.read_progress()
+        if self.proc.returncode not in (0, 3) and progress.get("status") in ("running", None):
+            logs = sorted((project.root / "logs").glob("*.log"))
+            tail = logs[-1].read_text(encoding="utf-8", errors="replace").strip().splitlines()[-12:] if logs else []
+            project.write_progress(status="error", task=self.task, message="\n".join(tail) or f"Worker exited with code {self.proc.returncode}")
+
     def is_running(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
 
@@ -114,7 +126,7 @@ class JobManager:
             if only:
                 cmd += ["--only", *only]
             flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-            project.write_progress(status="running", stage="starting", fraction=0.0, overall=0.0,
+            project.write_progress(status="running", stage="starting", fraction=0.0, overall=0.0, task=task,
                                    stage_label="Starting", message="Loading the AI engine")
             self.proc = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT, creationflags=flags)
             self.project_id, self.task = project.root.name, task
@@ -128,7 +140,7 @@ class JobManager:
                     self.proc.wait(timeout=10)
                 except subprocess.TimeoutExpired:
                     self.proc.kill()
-                project.write_progress(status="cancelled", message="Stopped. Start again to continue where it left off.")
+                project.write_progress(status="cancelled", task=self.task, message="Stopped. Start again to continue where it left off.")
 
 
 # --- app ---------------------------------------------------------------------------------
@@ -391,13 +403,13 @@ def set_manual_reference(project: Project, data: dict) -> dict:
     ref = None
     if data.get("file"):
         path = Path(data["file"])
-        ref = Reference(f"manual-{abs(hash(str(path))) % 10**12}", data.get("title") or path.stem, data.get("artist", ""), str(path), "manual")
+        ref = Reference("manual-" + hashlib.sha1(str(path).encode()).hexdigest()[:16], data.get("title") or path.stem, data.get("artist", ""), str(path), "manual")
     elif data.get("url"):
         url = data["url"].strip()
         source = "youtube" if "youtu" in url else "itunes" if "apple.com" in url else "deezer" if "dzcdn" in url else "web"
         cand = Candidate(data.get("title", ""), data.get("artist", ""), source if source != "web" else "youtube", url)
         path = download(cand, library.root / "downloads", project.settings.identify.cookies_browser)
-        ref = Reference(f"manual-{abs(hash(url)) % 10**12}", data.get("title") or path.stem, data.get("artist", ""), str(path), "manual", url=url)
+        ref = Reference("manual-" + hashlib.sha1(url.encode()).hexdigest()[:16], data.get("title") or path.stem, data.get("artist", ""), str(path), "manual", url=url)
     if ref is not None:
         library.add(ref)
     seg.update({"title": data.get("title") or seg.get("title"), "artist": data.get("artist", seg.get("artist", "")),

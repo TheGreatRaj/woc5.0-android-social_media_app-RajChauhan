@@ -224,7 +224,7 @@ function fillProgress(card, pr, running) {
       el("div", {}, el("div", { class: "stage" }, running ? (pr.stage_label || "Working") : pr.status === "error" ? "Something went wrong" : "Paused"),
         el("div", { class: "muted small" }, pr.message || "")),
       running ? el("button", { class: "btn danger", onclick: stopJob }, "Stop")
-        : el("button", { class: "btn primary", disabled: anyRunning(), onclick: () => runTask(state.current.segments?.length ? "export" : "analyze") }, "Continue")),
+        : el("button", { class: "btn primary", disabled: anyRunning(), onclick: () => runTask(pr.task || (state.current.segments?.length ? "export" : "analyze"), pr.task === "identify" ? pr.only : undefined) }, "Continue")),
   ];
   if (running || pr.status !== "error") {
     parts.push(el("div", { class: "bar" }, el("div", { class: "fill", style: `width:${pct}%` })),

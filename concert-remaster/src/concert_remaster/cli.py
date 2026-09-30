@@ -187,6 +187,7 @@ def run_worker(project_dir: Path, task: str, only: list[str] | None) -> int:
         return stop.is_set() or cancel_file.exists()
 
     job = Job(project, cancel=cancelled)
+    job.task = task
     try:
         if task == "analyze":
             job.analyze()
@@ -202,11 +203,11 @@ def run_worker(project_dir: Path, task: str, only: list[str] | None) -> int:
             job.run_all()
         return 0
     except Cancelled:
-        project.write_progress(status="cancelled", message="Stopped. Start again to continue where it left off.")
+        project.write_progress(status="cancelled", task=task, message="Stopped. Start again to continue where it left off.")
         return 3
     except Exception as exc:
         logging.exception("Job failed")
-        project.write_progress(status="error", message=f"{type(exc).__name__}: {exc}")
+        project.write_progress(status="error", task=task, message=f"{type(exc).__name__}: {exc}")
         return 1
     finally:
         cancel_file.unlink(missing_ok=True)
