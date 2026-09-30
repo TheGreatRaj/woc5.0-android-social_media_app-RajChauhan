@@ -140,6 +140,33 @@ PROFILES: dict[str, StemProfile] = {
         widen_mono=True,
         balance_db=-4.0,
     ),
+    "woodwinds": StemProfile(
+        highpass_hz=180.0,
+        eq=(EQBand("peak", 400.0, -1.5, 1.0), EQBand("peak", 2500.0, 1.0, 1.0), EQBand("high_shelf", 9000.0, 1.0)),
+        compress_depth_db=6.0,
+        compress_ratio=2.0,
+        attack_ms=15.0,
+        release_ms=150.0,
+        width=1.1,
+        widen_mono=True,
+        reverb=0.06,
+        balance_db=-6.0,
+    ),
+    "backing_vocals": StemProfile(
+        highpass_hz=120.0,
+        denoise=0.4,
+        expander_range_db=35.0,
+        eq=(EQBand("peak", 300.0, -2.5, 1.0), EQBand("peak", 3000.0, 1.0, 0.9), EQBand("high_shelf", 10000.0, 2.0)),
+        compress_depth_db=10.0,
+        compress_ratio=4.0,
+        attack_ms=5.0,
+        release_ms=100.0,
+        deess=True,
+        width=1.5,
+        widen_mono=True,
+        reverb=0.18,
+        balance_db=-7.0,
+    ),
     # Used when the band isn't split further (the "fast" presets or --stems 2).
     "instrumental": StemProfile(
         highpass_hz=30.0,
@@ -156,6 +183,13 @@ PROFILES: dict[str, StemProfile] = {
     # Only mixed back in when the user asks to keep some audience ambience.
     "crowd": StemProfile(highpass_hz=150.0, width=1.4, widen_mono=True, balance_db=-12.0),
 }
+
+
+PROFILES["lead_vocals"] = PROFILES["vocals"]
+# Drum-kit pieces are export-only; they get a light clean-up like the whole kit.
+for _piece in ("kick", "snare", "toms", "hihat", "ride", "crash"):
+    PROFILES[_piece] = StemProfile(highpass_hz=30.0 if _piece in ("kick", "toms") else 150.0, expander_range_db=30.0,
+                                   expander_ratio=1.8, balance_db=-8.0)
 
 
 def profile_for(stem: str, overrides: dict[str, StemProfile] | None = None) -> StemProfile:

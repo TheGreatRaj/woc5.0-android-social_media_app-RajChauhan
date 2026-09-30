@@ -159,6 +159,9 @@ def master(
     tonal_strength: float = 0.5,
     glue: bool = True,
     max_limiting_db: float = 6.0,
+    glue_depth_db: float = 6.0,
+    reference_strength: float | None = None,
+    reference_max_db: float = 6.0,
 ) -> tuple[np.ndarray, MasterReport]:
     """Glue, tonal balance, then hit ``target_lufs`` without exceeding ``ceiling_dbtp``.
 
@@ -167,14 +170,16 @@ def master(
     stays quieter rather than getting crushed; the report says what it hit.
     """
     input_lufs = integrated_lufs(mix, sample_rate)
-    x = glue_compress(mix, sample_rate) if glue else mix
+    x = glue_compress(mix, sample_rate, glue_depth_db) if glue and glue_depth_db > 0 else mix
 
     centers, curve = np.array([]), np.array([])
-    if tonal_strength > 0:
-        strength = tonal_strength if reference is None else min(1.0, tonal_strength + 0.3)
-        centers, curve = tonal_correction_db(
-            x, sample_rate, reference, strength=strength, max_db=4.0 if reference is None else 6.0
-        )
+    if reference is not None:
+        strength = min(1.0, tonal_strength + 0.3) if reference_strength is None else reference_strength
+        max_db = reference_max_db
+    else:
+        strength, max_db = tonal_strength, 4.0
+    if strength > 0:
+        centers, curve = tonal_correction_db(x, sample_rate, reference, strength=strength, max_db=max_db)
         x = apply_eq_curve(x, sample_rate, centers, curve)
 
     pre_lufs = integrated_lufs(x, sample_rate)

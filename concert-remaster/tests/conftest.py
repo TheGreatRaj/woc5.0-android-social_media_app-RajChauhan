@@ -35,24 +35,28 @@ def music():
 class FakeBackend:
     """Stands in for the AI models with fixed proportional splits, so stems always sum to the input."""
 
+    SPLITS = [
+        ("crowd", {"crowd": 0.1, "other": 0.9}),
+        ("dereverb", {"noreverb": 0.8, "reverb": 0.2}),
+        ("echo", {"noreverb": 0.8, "reverb": 0.2}),
+        ("denoise", {"dry": 0.9, "other": 0.1}),
+        ("karaoke", {"vocals": 0.7, "instrumental": 0.3}),
+        ("drumsep", {"kick": 0.3, "snare": 0.25, "toms": 0.1, "hh": 0.15, "ride": 0.1, "crash": 0.1}),
+        ("wind", {"woodwinds": 0.2, "nowoodwinds": 0.8}),
+        ("-sw", {"vocals": 0.05, "drums": 0.3, "bass": 0.25, "guitar": 0.2, "piano": 0.1, "other": 0.1}),
+        ("6s", {"vocals": 0.05, "drums": 0.3, "bass": 0.25, "guitar": 0.2, "piano": 0.1, "other": 0.1}),
+        ("demucs", {"vocals": 0.25, "drums": 0.3, "bass": 0.25, "other": 0.2}),
+    ]
+
     def __init__(self):
         self.calls = []
 
     def separate(self, audio, sample_rate, model):
         self.calls.append(model)
         name = model.lower()
-        if "crowd" in name:
-            return {"crowd": audio * 0.1, "nocrowd": audio * 0.9}
-        if "dereverb" in name or "deecho" in name:
-            return {"noreverb": audio * 0.8, "reverb": audio * 0.2}
-        if "denoise" in name:
-            return {"dry": audio * 0.9, "other": audio * 0.1}
-        if "6s" in name:
-            parts = {"vocals": 0.05, "drums": 0.3, "bass": 0.25, "guitar": 0.2, "piano": 0.1, "other": 0.1}
-            return {stem: audio * share for stem, share in parts.items()}
-        if "demucs" in name:
-            parts = {"vocals": 0.25, "drums": 0.3, "bass": 0.25, "other": 0.2}
-            return {stem: audio * share for stem, share in parts.items()}
+        for token, parts in self.SPLITS:
+            if token in name:
+                return {stem: audio * share for stem, share in parts.items()}
         return {"vocals": audio * 0.4, "instrumental": audio * 0.6}
 
 
