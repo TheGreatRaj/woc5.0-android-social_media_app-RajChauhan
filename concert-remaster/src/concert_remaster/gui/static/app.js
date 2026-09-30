@@ -705,11 +705,14 @@ function renderExportCard(p) {
       el("label", { class: "row" }, "Stems ", el("select", { style: "width:auto", onchange: (e) => set("stems", e.target.value) },
         ...[["per_song", "per song"], ["full_concert", "whole show"], ["both", "both"], ["none", "none"]].map(([v, l]) => el("option", { value: v, selected: out.stems === v }, l)))),
       toggle("songs", "One file per song"), toggle("full_concert", "Full concert"), toggle("vibes_edition", "Concert vibes edition"),
-      toggle("transcript", "Speech subtitles"), toggle("tracklist", "Track list & cue")),
+      toggle("transcript", "Speech subtitles"), toggle("tracklist", "Track list & cue"),
+      p.source_info?.video ? toggle("video", "🎬 Remastered video") : null),
     outputs.length ? el("div", { class: "outputs" }, ...Object.entries(folders).flatMap(([folder, files]) => [
       el("div", { class: "output-folder" }, folder === "." ? "Main" : folder),
       ...files.map((f) => el("div", { class: "output-row" },
-        /\.(flac|wav|mp3)$/i.test(f.name) ? el("button", { class: "icon-btn", title: "Play", onclick: () => playOutput(f) }, "▶") : el("span", { style: "width:26px" }),
+        /\.(flac|wav|mp3)$/i.test(f.name) ? el("button", { class: "icon-btn", title: "Play", onclick: () => playOutput(f) }, "▶")
+          : /\.(mp4|mkv|mov)$/i.test(f.name) ? el("button", { class: "icon-btn", title: "Watch in your video player", onclick: () => guarded(() => api("/api/open", { method: "POST", body: { path: f.full_path, launch: true } })) }, "🎬")
+          : el("span", { style: "width:26px" }),
         el("span", { class: "fname", title: f.full_path }, f.name), el("span", { class: "muted small" }, fmtSize(f.size)),
         el("button", { class: "icon-btn", title: "Show in folder", onclick: () => guarded(() => api("/api/open", { method: "POST", body: { path: f.full_path } })) }, "📂")))]))
       : el("p", { class: "muted small" }, "Nothing exported yet."));

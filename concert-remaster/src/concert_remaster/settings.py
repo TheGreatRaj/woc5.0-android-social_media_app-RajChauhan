@@ -222,6 +222,9 @@ class OutputSettings:
     stems: str = param("per_song", "Stems", choices=["none", "per_song", "full_concert", "both"])
     transcript: bool = param(True, "Transcript of the artist's speech (.srt)")
     tracklist: bool = param(True, "Track list and cue sheet")
+    video: bool = param(True, "Remastered video",
+                        help="For video recordings: the video with the remastered sound, in sync with the picture "
+                        "(the whole show at its original length, nothing cut; the picture is copied untouched).")
 
 
 @dataclass

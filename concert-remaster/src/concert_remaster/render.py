@@ -88,8 +88,15 @@ def render_project(project: Project, progress: Callable[[str, float, str], None]
         tail = fade if nxt is not None and nxt.get("include", True) else 0
         pieces.append(_render_segment(project, seg, names, settings, guides.get(seg["id"]), cutoff, work, tail, total))
 
+    video = None
+    if settings.output.video and _has_video(project):
+        progress("render", 0.9, "Rendering the video soundtrack")
+        video = _video_pieces(project, segments, pieces, names, settings, guides, cutoff, work, total, cancel)
     progress("render", 0.95, "Writing files")
     outputs = _write_outputs(project, settings, pieces, segments)
+    if video:
+        progress("render", 0.97, "Writing the remastered video")
+        outputs["video"] = _write_video(project, video, work)
     report = {
         "rendered": time.strftime("%Y-%m-%d %H:%M:%S"),
         "outputs": {k: [str(p) for p in v] if isinstance(v, list) else str(v) for k, v in outputs.items()},
@@ -102,6 +109,58 @@ def render_project(project: Project, progress: Callable[[str, float, str], None]
     shutil.rmtree(work, ignore_errors=True)
     progress("render", 1.0, "Finished")
     return report
+
+
+def _has_video(project: Project) -> bool:
+    info = project.state.get("source_info") or {}
+    if "video" not in info:  # projects made before video support
+        from .audio_io import probe_source
+
+        try:
+            info = probe_source(project.source)
+        except Exception:
+            return False
+    return bool(info.get("video")) and Path(project.source).exists()
+
+
+def _video_pieces(project: Project, segments: list[dict], pieces: list, names: list[str], settings: Settings,
+                  guides: dict, cutoff: float | None, work: Path, total: int, cancel) -> list[Piece]:
+    """Every part of the show at its original length, for a soundtrack that stays in sync with the picture."""
+    fade = int(settings.crowd.fade_seconds * SR)
+    out = []
+    for index, seg in enumerate(segments):
+        if cancel():
+            raise Cancelled()
+        start, end = int(seg["start"] * SR), min(total, int(seg["end"] * SR))
+        if end <= start:
+            continue
+        tail = min(fade, total - end) if index + 1 < len(segments) else 0
+        piece = pieces[index]
+        if piece is not None and piece.body_frames == end - start and piece.tail_frames == tail:
+            out.append(piece)
+            continue
+        full = dict(seg, id=seg["id"] + "-video", include=True)
+        if seg["kind"] == "talk" and (seg.get("action") or settings.speech.action) == "remove":
+            full["action"] = "enhance"  # the artist is on screen: keep what they say
+        piece = _render_segment(project, full, names, settings, guides.get(seg["id"]), cutoff, work, tail, total, full_length=True)
+        if piece is None:  # nothing audible: keep the time with silence
+            path = work / f"{full['id']}.flac"
+            with StemWriter(path) as writer:
+                writer.write(np.zeros((2, end - start + tail), dtype=np.float32))
+            piece = Piece(full, path, start / SR, end - start, tail)
+        out.append(piece)
+    return out
+
+
+def _write_video(project: Project, pieces: list[Piece], work: Path) -> Path:
+    from .audio_io import remux_video
+
+    soundtrack = work / "video-soundtrack.flac"
+    _assemble(soundtrack, pieces, 48000, 24)
+    source = Path(project.source)
+    suffix = ".mp4" if source.suffix.lower() in (".mp4", ".m4v", ".mov", ".3gp") else ".mkv"
+    name = re.sub(r'[<>:"/\\|?*]+', "_", project.name)
+    return remux_video(source, soundtrack, project.output_dir / f"{name} - Remastered Video{suffix}")
 
 
 def _whole_show(project: Project) -> dict:
@@ -121,7 +180,8 @@ def _restore_cutoff(project: Project, settings: Settings) -> float | None:
 
 
 def _render_segment(project: Project, seg: dict, names: list[str], settings: Settings, guide: ReferenceGuide | None,
-                    cutoff: float | None, work: Path, tail: int, total: int) -> Piece | None:
+                    cutoff: float | None, work: Path, tail: int, total: int, full_length: bool = False) -> Piece | None:
+    """Render one part of the show. ``full_length`` keeps its original duration (for video)."""
     if not seg.get("include", True):
         return None
     kind = seg["kind"]
@@ -135,7 +195,7 @@ def _render_segment(project: Project, seg: dict, names: list[str], settings: Set
     elif kind == "talk":
         audio, stems, report = _render_talk(project, seg, names, settings, start, end + tail)
     elif kind == "crowd":
-        action = seg.get("action") or settings.crowd.between_songs
+        action = "keep" if full_length else seg.get("action") or settings.crowd.between_songs
         if action == "remove":
             return None
         if action == "shorten":
@@ -145,9 +205,9 @@ def _render_segment(project: Project, seg: dict, names: list[str], settings: Set
         if action == "shorten":
             audio = _fade(audio, int(0.3 * SR), int(min(settings.crowd.fade_seconds, 2.0) * SR))
     else:  # silence: keep a short breath, trim the rest
-        keep = min(end - start, int(2.0 * SR))
-        end, tail = start + keep, 0
-        audio, stems, report = _render_ambience(project, names, settings, start, end, -30.0)
+        keep = end - start if full_length else min(end - start, int(2.0 * SR))
+        end, tail = start + keep, tail if full_length else 0
+        audio, stems, report = _render_ambience(project, names, settings, start, end + tail, -30.0)
     if audio is None:
         return None
     path = work / f"{seg['id']}.flac"

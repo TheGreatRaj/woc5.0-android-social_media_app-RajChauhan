@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "concert-remaster"
-version = "0.2.0"
+version = "0.3.0"
 description = "Turn live concert recordings into clean, studio-style masters with on-device AI stem separation."
 readme = "README.md"
 requires-python = ">=3.10"

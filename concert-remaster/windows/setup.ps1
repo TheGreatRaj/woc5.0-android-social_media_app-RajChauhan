@@ -11,7 +11,8 @@
 
 param(
     [ValidateSet("auto", "nvidia", "amd", "cpu")] [string] $Gpu = "auto",
-    [switch] $SkipModels
+    [switch] $SkipModels,
+    [switch] $NoShortcut     # the installer makes its own shortcuts
 )
 
 $ErrorActionPreference = "Stop"
@@ -125,20 +126,22 @@ try {
         Run $Py @("-m", "concert_remaster", "download-models", "--preset", "all", "--whisper", "large-v3")
     }
 
-    # 8. Desktop shortcut
-    Step "Creating a desktop shortcut"
-    $start = Join-Path (Split-Path -Parent $App) "start.bat"
-    if (-not (Test-Path $start)) { $start = Join-Path $App "windows\start.bat" }
-    $shell = New-Object -ComObject WScript.Shell
-    $link = $shell.CreateShortcut((Join-Path ([Environment]::GetFolderPath("Desktop")) "Concert Remaster.lnk"))
-    $link.TargetPath = $start
-    $link.WorkingDirectory = Split-Path -Parent $start
-    $link.IconLocation = "$env:SystemRoot\System32\imageres.dll,103"
-    $link.Save()
-    Ok "shortcut created"
+    # 8. Desktop shortcut to the app (Concert Remaster.exe next to this folder)
+    if (-not $NoShortcut) {
+        Step "Creating a desktop shortcut"
+        $start = Join-Path (Split-Path -Parent $App) "Concert Remaster.exe"
+        if (-not (Test-Path $start)) { $start = Join-Path $App "windows\start.bat" }
+        $shell = New-Object -ComObject WScript.Shell
+        $link = $shell.CreateShortcut((Join-Path ([Environment]::GetFolderPath("Desktop")) "Concert Remaster.lnk"))
+        $link.TargetPath = $start
+        $link.WorkingDirectory = Split-Path -Parent $start
+        $link.IconLocation = if ($start.EndsWith(".exe")) { "$start,0" } else { "$env:SystemRoot\System32\imageres.dll,103" }
+        $link.Save()
+        Ok "shortcut created"
+    }
 
     Write-Host ""
-    Write-Host "  All done. Start the app with 'Concert Remaster' on your desktop (or start.bat)." -ForegroundColor Green
+    Write-Host "  All done. Start the app with 'Concert Remaster' on your desktop (or Concert Remaster.exe)." -ForegroundColor Green
     Write-Host ""
 }
 catch {

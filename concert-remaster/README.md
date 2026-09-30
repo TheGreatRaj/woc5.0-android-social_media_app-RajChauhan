@@ -12,18 +12,26 @@ comparison, which are then kept locally.
 
 ## Install on Windows (one time)
 
-1. Download this repository as a ZIP and extract it anywhere with ~20 GB free.
-2. Double-click **`setup.bat`** (in the top folder). It:
-   - detects your graphics card (NVIDIA → CUDA, AMD → DirectML, otherwise CPU),
-   - installs a private Python 3.12 and the AI libraries for that card,
-   - installs ffmpeg,
-   - downloads **every AI model (~12 GB) and Whisper large-v3**, so the app then works fully offline,
-   - puts a **Concert Remaster** shortcut on your desktop.
+**With the installer (recommended):** run **`Concert Remaster Setup.exe`** from the top folder of the
+download. It installs the app for your user account (no admin rights needed; pick a drive with
+~20 GB free), lets you choose the graphics card (automatic by default), and then downloads, once:
 
-   Everything goes inside the `concert-remaster` folder; nothing is installed system-wide. If
-   anything fails (e.g. the connection drops), run `setup.bat` again; it continues where it stopped.
-   To choose the device yourself: `setup.bat -Gpu nvidia` / `-Gpu amd` / `-Gpu cpu`.
-3. Start the app with the desktop shortcut or **`start.bat`**.
+- a private Python 3.12 and the AI libraries for your card (NVIDIA → CUDA, AMD → DirectML, or CPU),
+- ffmpeg,
+- **every AI model (~12 GB) and Whisper large-v3**, so the app then works fully offline.
+
+It adds **Concert Remaster** to the Start menu and the desktop, and an uninstaller to *Settings →
+Apps* that can keep your projects. If the download is interrupted, start Concert Remaster: it offers
+to continue the setup where it stopped. Windows SmartScreen may warn about an unsigned program:
+*More info → Run anyway*.
+
+**Without installing:** extract the ZIP anywhere with ~20 GB free, double-click **`setup.bat`** (same
+steps as above, into the `concert-remaster` folder; `setup.bat -Gpu nvidia` / `-Gpu amd` /
+`-Gpu cpu` to choose the device), then start **`Concert Remaster.exe`**. Everything stays inside the
+folder; nothing is installed system-wide.
+
+The app opens in its own window and plays audio through your sound card. `start.bat` starts it with
+a console window instead, which shows messages if something goes wrong; the log is in `logs/app.log`.
 
 For your machines: the **laptop (RTX 3060)** is the one for full-quality runs of long shows. The
 **RX 580 desktop** uses DirectML, which is experimental: models that don't run there fall back to
@@ -64,6 +72,8 @@ projects/<show>/output/
   <show> - Full Concert.cue / Tracklist.txt
   <show> - Full Concert.srt                what the artist said, as subtitles
   Artist speech.txt, report.json
+  <show> - Remastered Video.mp4            video recordings: the picture untouched, the new sound
+                                           (the whole show at its original length, in sync)
 ```
 
 ### Stage effects (CO2 jets, fireworks, confetti) and a steady level
@@ -158,6 +168,12 @@ community (Roformer models by viperx, KimberleyJensen, unwa, anvuew, aufr33, jar
 [Demucs](https://github.com/facebookresearch/demucs). Speech-to-text is
 [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (MIT). Check each model's licence before
 commercial use.
+
+## Building the Windows programs
+
+`windows/build.sh` builds `Concert Remaster.exe` (the launcher, from `windows/launcher/launcher.c`)
+and `Concert Remaster Setup.exe` (the NSIS installer, `windows/installer/installer.nsi`) on any
+Linux/macOS/WSL machine with mingw-w64, NSIS and git: `concert-remaster/windows/build.sh`.
 
 ## Development
 

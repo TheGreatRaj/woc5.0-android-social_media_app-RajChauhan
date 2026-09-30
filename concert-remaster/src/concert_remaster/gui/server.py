@@ -9,6 +9,7 @@ stopped job continues where it left off.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import shutil
@@ -164,6 +165,18 @@ def create_app():
 
         return {"version": __version__, "devices": describe_devices(), "projects_dir": str(projects_dir()),
                 "ffmpeg": bool(ensure_ffmpeg()), "stage_labels": STAGE_LABELS}
+
+    @app.get("/api/ping")
+    def ping():
+        return {"app": "concert-remaster", "version": __version__}
+
+    @app.post("/api/focus")
+    def focus():
+        """A second launch asks the open window to come to the front."""
+        callback = getattr(app.state, "focus", None)
+        if callback:
+            callback()
+        return {"ok": bool(callback)}
 
     @app.get("/api/schema")
     def schema():
@@ -330,7 +343,10 @@ def create_app():
         path = Path(data["path"])
         if not path.exists():
             raise HTTPException(404, "Not found")
-        reveal(path)
+        if data.get("launch") and path.is_file():
+            launch(path)  # e.g. a video, in the PC's own player
+        else:
+            reveal(path)
         return {"ok": True}
 
     @app.get("/files/{project_id}/{relative:path}")
@@ -642,6 +658,13 @@ def native_dialog(kind: str, title: str) -> str:
         return ""
 
 
+def launch(path: Path) -> None:
+    if os.name == "nt":
+        os.startfile(str(path))  # type: ignore[attr-defined]
+    else:
+        subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", str(path)])
+
+
 def reveal(path: Path) -> None:
     if os.name == "nt":
         if path.is_file():
@@ -665,15 +688,24 @@ def open_app_window(url: str) -> None:
     webbrowser.open(url)
 
 
-def desktop_window(url: str) -> bool:
+def desktop_window(url: str, app=None) -> bool:
     """Show the app in its own desktop window (WebView2 on Windows). Returns when it is closed."""
     try:
         import webview
     except ImportError:
         return False
     try:
-        webview.create_window("Concert Remaster", url, width=1560, height=980, min_size=(1100, 720),
-                              background_color="#0d0f14")
+        window = webview.create_window("Concert Remaster", url, width=1560, height=980, min_size=(1100, 720),
+                                       background_color="#0d0f14", text_select=True)
+
+        def focus():
+            window.restore()
+            window.show()
+            window.on_top = True
+            window.on_top = False
+
+        if app is not None:
+            app.state.focus = focus
         webview.start(gui="edgechromium" if os.name == "nt" else None, private_mode=False,
                       storage_path=str(app_root() / "window"))
         return True
@@ -682,17 +714,48 @@ def desktop_window(url: str) -> bool:
         return False
 
 
+def _running_instance(host: str, port: int) -> bool:
+    """Is Concert Remaster already running on this port? Then bring its window forward."""
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"http://{host}:{port}/api/ping", timeout=1.5) as r:
+            if json.loads(r.read()).get("app") != "concert-remaster":
+                return False
+        urllib.request.urlopen(urllib.request.Request(f"http://{host}:{port}/api/focus", data=b"", method="POST"), timeout=3)
+        return True
+    except Exception:
+        return False
+
+
+def _free_port(host: str, port: int) -> int:
+    import socket
+
+    for candidate in range(port, port + 20):
+        with socket.socket() as sock:
+            try:
+                sock.bind((host, candidate))
+                return candidate
+            except OSError:
+                continue
+    raise SystemExit("No free port for the app's local engine.")
+
+
 def run(host: str = "127.0.0.1", port: int = 8765, open_window: bool = True) -> None:
     """Start the local engine (reachable only from this PC) and open the app window."""
     import uvicorn
 
     from ..playback import get_player
 
+    if open_window and _running_instance(host, port):
+        return  # already open: its window was brought to the front
     ensure_ffmpeg()
     projects_dir().mkdir(parents=True, exist_ok=True)
+    port = _free_port(host, port)
     url = f"http://{host}:{port}/"
     app = create_app()
-    server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="warning"))
+    # log_config=None: no console logging setup (there is no console when started from the app icon).
+    server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="warning", log_config=None, access_log=False))
     if not open_window:
         print(f"Concert Remaster engine running at {url}")
         server.run()
@@ -706,7 +769,7 @@ def run(host: str = "127.0.0.1", port: int = 8765, open_window: bool = True) -> 
     if not thread.is_alive():
         raise SystemExit(f"Could not start: port {port} is in use (is Concert Remaster already open?)")
     try:
-        if not desktop_window(url):
+        if not desktop_window(url, app):
             open_app_window(url)
             print("Concert Remaster is running. Close this window to quit.")
             while thread.is_alive():

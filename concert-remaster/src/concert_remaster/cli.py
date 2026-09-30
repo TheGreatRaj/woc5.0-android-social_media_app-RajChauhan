@@ -82,6 +82,7 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
     command = args.command or "gui"
     if command == "gui":
+        _log_to_file()
         from .gui.server import run
 
         run(host=getattr(args, "host", "127.0.0.1"), port=getattr(args, "port", 8765), open_window=not getattr(args, "no_browser", False))
@@ -106,6 +107,22 @@ def main(argv: list[str] | None = None) -> int:
         return process(args)
     parser.error(f"unknown command {command}")
     return 2
+
+
+def _log_to_file() -> None:
+    """The app usually runs without a console (started from its icon): keep a log file."""
+    from logging.handlers import RotatingFileHandler
+
+    from .paths import app_root
+
+    try:
+        folder = app_root() / "logs"
+        folder.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(folder / "app.log", maxBytes=2_000_000, backupCount=2, encoding="utf-8")
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        logging.getLogger().addHandler(handler)
+    except OSError:
+        pass
 
 
 def describe_devices() -> dict:
@@ -134,7 +151,7 @@ def describe_devices() -> dict:
 
 def download_models(preset: str, whisper: str) -> int:
     from .audio_io import ensure_ffmpeg
-    from .separation import all_models, split_models
+    from .separation import all_models
 
     ensure_ffmpeg()
     names: list[str] = []
@@ -151,7 +168,8 @@ def download_models(preset: str, whisper: str) -> int:
     for i, model in enumerate(names, 1):
         print(f"[{i}/{len(names)}] {model}", flush=True)
         try:
-            separator.download_model_and_data(model)
+            with _heartbeat(target, f"    {model}"):
+                separator.download_model_and_data(model)
         except Exception as exc:
             failures += 1
             print(f"    FAILED: {exc}", flush=True)
@@ -166,6 +184,31 @@ def download_models(preset: str, whisper: str) -> int:
             print(f"    FAILED: {exc}", flush=True)
     print("All models are ready for offline use." if not failures else f"{failures} download(s) failed; run this again to retry.")
     return 1 if failures else 0
+
+
+class _heartbeat:
+    """Print a line every half minute during a long download (the installer shows these)."""
+
+    def __init__(self, folder: Path, label: str):
+        self.folder, self.label = folder, label
+        self.done = threading.Event()
+
+    def _size(self) -> int:
+        return sum(f.stat().st_size for f in self.folder.rglob("*") if f.is_file())
+
+    def __enter__(self):
+        start, begin = time.time(), self._size()
+
+        def beat():
+            while not self.done.wait(30):
+                got = (self._size() - begin) / 2**20
+                print(f"{self.label}: {got:.0f} MB so far ({(time.time() - start) / 60:.0f} min)", flush=True)
+
+        threading.Thread(target=beat, daemon=True).start()
+        return self
+
+    def __exit__(self, *exc):
+        self.done.set()
 
 
 def run_worker(project_dir: Path, task: str, only: list[str] | None) -> int:

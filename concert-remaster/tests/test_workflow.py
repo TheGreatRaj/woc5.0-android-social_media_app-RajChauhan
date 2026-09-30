@@ -112,3 +112,34 @@ def test_mp3_and_16_bit(tmp_path, show_file, fake_backend):
     project, job = _analyzed(tmp_path, show_file, fake_backend, settings)
     job.export()
     assert len(list((project.output_dir / "Songs").glob("*.mp3"))) == 2
+
+
+def test_video_recordings_get_a_remastered_video_in_sync(tmp_path, show_file, fake_backend):
+    import re
+    import subprocess
+
+    from concert_remaster.audio_io import ensure_ffmpeg, probe_source
+
+    ffmpeg = ensure_ffmpeg()
+    video = tmp_path / "Phone Video.mp4"
+    subprocess.run([ffmpeg, "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25", "-i", str(show_file),
+                    "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
+                    "-shortest", str(video)], check=True)
+    assert probe_source(video)["video"] == "h264"
+    settings = _settings()
+    settings.speech.action = "remove"          # cut from the audio editions ...
+    settings.crowd.between_songs = "shorten"   # ... and shortened, but the video keeps everything
+    settings.output.stems = "none"
+    project = Project.create(video, tmp_path / "projects", settings)
+    job = Job(project, backend=fake_backend)
+    job.analyze()
+    project.update(lambda state: state.__setitem__("segments", renumber([dict(s) for s in SEGMENTS])))
+    report = job.export()
+    out = project.output_dir / "Phone Video - Remastered Video.mp4"
+    assert report["outputs"]["video"] == str(out) and out.exists()
+    info = subprocess.run([ffmpeg, "-hide_banner", "-i", str(out)], capture_output=True, text=True).stderr
+    assert "Video: h264" in info and "Audio: aac" in info and "48000 Hz" in info
+    hours, minutes, seconds = re.search(r"Duration: (\d+):(\d+):([\d.]+)", info).groups()
+    assert float(seconds) + 60 * int(minutes) == pytest.approx(31.0, abs=0.15)  # same length as the show
+    # The audio editions were still shortened.
+    assert sf.info(project.output_dir / "Phone Video - Full Concert.flac").duration < 31.0 - 3.0

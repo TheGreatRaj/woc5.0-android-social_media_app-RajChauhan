@@ -200,7 +200,31 @@ def probe_source(path: str | Path) -> dict:
     rate = re.search(r"Audio:.*?(\d+) kb/s", stderr)
     if rate:
         info["bitrate_kbps"] = int(rate.group(1))
+    # A real picture stream (album art in MP3/M4A files shows up as an "attached pic").
+    video = [m for m in re.finditer(r"Video: (\w+)[^\n]*", stderr) if "attached pic" not in m.group(0)]
+    info["video"] = video[0].group(1) if video else None
     return info
+
+
+def remux_video(source: str | Path, soundtrack: str | Path, target: str | Path, bitrate_kbps: int = 320) -> Path:
+    """Copy the picture of ``source`` untouched and give it ``soundtrack`` as its sound (AAC)."""
+    exe = ensure_ffmpeg()
+    if exe is None:
+        raise AudioLoadError("ffmpeg is required to write videos.")
+    target = Path(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    partial = target.with_name(target.stem + ".partial" + target.suffix)
+    cmd = [exe, "-y", "-nostdin", "-v", "error", "-i", str(source), "-i", str(soundtrack),
+           "-map", "0:v:0", "-map", "1:a:0", "-map_metadata", "0", "-c:v", "copy",
+           "-c:a", "aac", "-b:a", f"{bitrate_kbps}k", "-ar", "48000"]
+    if target.suffix.lower() in (".mp4", ".m4v", ".mov"):
+        cmd += ["-movflags", "+faststart"]
+    result = subprocess.run(cmd + [str(partial)], capture_output=True, text=True, errors="replace")
+    if result.returncode != 0:
+        partial.unlink(missing_ok=True)
+        raise AudioLoadError(f"Could not write the video: {result.stderr.strip()[-400:]}")
+    partial.replace(target)
+    return target
 
 
 def stream_decode(path: str | Path, sample_rate: int = SAMPLE_RATE, block_seconds: float = 30.0) -> Iterator[np.ndarray]:
