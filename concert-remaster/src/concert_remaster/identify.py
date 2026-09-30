@@ -24,6 +24,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass, field
@@ -240,10 +241,22 @@ class Candidate:
     extra: dict = field(default_factory=dict)
 
 
-def _get_json(url: str, timeout: float = 15.0) -> dict:
+def _get_json(url: str, timeout: float = 15.0, attempts: int = 3) -> dict:
+    """GET a JSON API, waiting and retrying when it is rate-limiting (403/429/5xx)."""
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
+    for attempt in range(attempts):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            if exc.code not in (403, 429, 500, 502, 503) or attempt == attempts - 1:
+                raise
+        else:
+            # Deezer reports its quota limit inside a normal response.
+            if not (isinstance(data, dict) and (data.get("error") or {}).get("code") == 4) or attempt == attempts - 1:
+                return data
+        time.sleep(3.0 * (attempt + 1))
+    return {}
 
 
 def itunes_search(query: str, limit: int = 5) -> list[Candidate]:
@@ -333,9 +346,9 @@ def artist_catalog(artist: str, root: Path | None = None, limit: int = 100, prog
     except Exception as exc:
         log.info("iTunes catalog failed: %s", exc)
     try:
-        hits = _get_json("https://api.deezer.com/search/artist?" + urllib.parse.urlencode({"q": artist, "limit": 1})).get("data", [])
-        if hits:
-            top = _get_json(f"https://api.deezer.com/artist/{hits[0]['id']}/top?limit={min(limit, 100)}").get("data", [])
+        hit = _deezer_artist(artist)
+        if hit:
+            top = _get_json(f"https://api.deezer.com/artist/{hit['id']}/top?limit={min(limit, 100)}").get("data", [])
             for r in top:
                 if r.get("preview"):
                     found.setdefault(_song_key(r.get("title", "")), Candidate(r.get("title", ""), r.get("artist", {}).get("name", ""), "deezer",
@@ -368,10 +381,10 @@ def network_catalog(artist: str, root: Path | None = None, related: int = 15, pe
         return library
     found: dict[str, Candidate] = {}
     try:
-        hits = _get_json("https://api.deezer.com/search/artist?" + urllib.parse.urlencode({"q": artist, "limit": 1})).get("data", [])
-        if hits:
-            ids = [(hits[0]["id"], hits[0]["name"], per_artist * 2)]
-            for r in _get_json(f"https://api.deezer.com/artist/{hits[0]['id']}/related?limit={related}").get("data", []):
+        hit = _deezer_artist(artist)
+        if hit:
+            ids = [(hit["id"], hit["name"], per_artist * 2)]
+            for r in _get_json(f"https://api.deezer.com/artist/{hit['id']}/related?limit={related}").get("data", []):
                 ids.append((r["id"], r["name"], per_artist))
             for artist_id, name, limit in ids:
                 progress(f"Listing songs by {name}")
@@ -393,6 +406,15 @@ def network_catalog(artist: str, root: Path | None = None, related: int = 15, pe
         except Exception as exc:
             log.info("Skipping %s: %s", cand.title, exc)
     return library
+
+
+def _deezer_artist(name: str) -> dict | None:
+    """The artist's real Deezer profile: search results often start with a near-empty duplicate,
+    so take the exact-name match with the most fans."""
+    hits = _get_json("https://api.deezer.com/search/artist?" + urllib.parse.urlencode({"q": name, "limit": 10})).get("data", [])
+    exact = [h for h in hits if h.get("name", "").casefold() == name.strip().casefold()]
+    pool = exact or hits
+    return max(pool, key=lambda h: h.get("nb_fan", 0)) if pool else None
 
 
 def _song_key(title: str) -> str:
