@@ -151,7 +151,7 @@ def describe_devices() -> dict:
 
 def download_models(preset: str, whisper: str) -> int:
     from .audio_io import ensure_ffmpeg
-    from .separation import all_models
+    from .separation import all_models, model_file_ok
 
     ensure_ffmpeg()
     names: list[str] = []
@@ -167,12 +167,31 @@ def download_models(preset: str, whisper: str) -> int:
     failures = 0
     for i, model in enumerate(names, 1):
         print(f"[{i}/{len(names)}] {model}", flush=True)
-        try:
-            with _heartbeat(target, f"    {model}"):
-                separator.download_model_and_data(model)
-        except Exception as exc:
+        path = target / model
+        if path.exists() and not model_file_ok(path):
+            print("    the earlier download is incomplete; fetching it again", flush=True)
+            path.unlink()
+        for attempt in range(3):
+            try:
+                with _heartbeat(target, f"    {model}"):
+                    separator.download_model_and_data(model)
+            except Exception as exc:
+                error = str(exc)
+            else:
+                error = None if not path.exists() or model_file_ok(path) else "the download was incomplete"
+            if error is None:
+                break
+            path.unlink(missing_ok=True)  # never leave a damaged file behind: it would be skipped next time
+            print(f"    attempt {attempt + 1} failed: {error}", flush=True)
+        else:
             failures += 1
-            print(f"    FAILED: {exc}", flush=True)
+            print(f"    FAILED: {model}", flush=True)
+    # Weights fetched as part of other models (e.g. Demucs' .th files): drop damaged ones so a rerun fetches them.
+    for weights in target.rglob("*"):
+        if weights.suffix.lower() in (".ckpt", ".pth", ".th", ".onnx") and weights.is_file() and not model_file_ok(weights):
+            print(f"    removing incomplete {weights.name}; run this again to fetch it", flush=True)
+            weights.unlink()
+            failures += 1
     if whisper:
         print(f"[whisper] {whisper}", flush=True)
         try:

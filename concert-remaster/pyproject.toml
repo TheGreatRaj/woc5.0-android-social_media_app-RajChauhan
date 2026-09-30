@@ -27,7 +27,8 @@ dependencies = [
 # AI separation models (Roformer, MDX-Net, Demucs) run locally through audio-separator.
 # Pick the CPU or GPU build; GPU gives 5-20x faster separation.
 cpu = ["audio-separator[cpu]>=0.40"]
-gpu = ["audio-separator[gpu]>=0.40"]
+# onnxruntime-gpu 1.27+ is built for CUDA 13; PyTorch's CUDA 12.6 build ships CUDA 12 libraries.
+gpu = ["audio-separator[gpu]>=0.40", "onnxruntime-gpu>=1.20,<1.27"]
 dml = ["audio-separator[dml]>=0.40"]
 # The desktop app: its window (WebView2 on Windows), audio output (PortAudio/WASAPI), speech
 # recognition, and the optional online song lookup (Shazam, YouTube).

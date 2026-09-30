@@ -93,12 +93,13 @@ try {
         "nvidia" {
             # CUDA 12.6 build: current PyTorch, matches onnxruntime-gpu's CUDA 12, works with NVIDIA drivers 560+.
             Run $Uv @("pip", "install", "--python", $Py, "torch", "torchaudio", "--index-url", "https://download.pytorch.org/whl/cu126")
-            $extra = "gpu"; $runtime = "onnxruntime-gpu"
+            # onnxruntime-gpu 1.27+ needs CUDA 13; 1.26 is the last build for CUDA 12 (what PyTorch ships).
+            $extra = "gpu"; $runtime = "onnxruntime-gpu"; $runtimeSpec = "onnxruntime-gpu>=1.20,<1.27"
         }
         "amd" {
             # DirectML needs its own build of PyTorch (2.4.1).
             Run $Uv @("pip", "install", "--python", $Py, "torch-directml")
-            $extra = "dml"; $runtime = "onnxruntime-directml"
+            $extra = "dml"; $runtime = "onnxruntime-directml"; $runtimeSpec = $runtime
         }
         default {
             Run $Uv @("pip", "install", "--python", $Py, "torch", "torchaudio", "--index-url", "https://download.pytorch.org/whl/cpu")
@@ -109,7 +110,7 @@ try {
     if ($runtime) {
         # Whisper pulls in the CPU onnxruntime, which would hide the GPU build; keep only the GPU one.
         RunQuiet $Uv @("pip", "uninstall", "--python", $Py, "onnxruntime")
-        Run $Uv @("pip", "install", "--python", $Py, "--reinstall-package", $runtime, $runtime)
+        Run $Uv @("pip", "install", "--python", $Py, "--reinstall-package", $runtime, $runtimeSpec)
     }
     Run $Uv @("pip", "install", "--python", $Py, "--upgrade", "yt-dlp[default]")   # YouTube changes often
     Ok "libraries installed"

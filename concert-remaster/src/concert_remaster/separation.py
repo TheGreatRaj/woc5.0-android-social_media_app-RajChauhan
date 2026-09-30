@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Protocol
@@ -90,6 +91,7 @@ class AudioSeparatorBackend:
         self._separators: dict[bool, object] = {}  # keyed by "accelerated"
         self._loaded: dict[bool, str | None] = {True: None, False: None}
         self._cpu_models: set[str] = set()
+        self._verified: set[str] = set()  # model files checked complete in this run
         self._calls = 0
         if device == "cpu":
             # Must happen before torch initialises CUDA.
@@ -152,13 +154,48 @@ class AudioSeparatorBackend:
             self._cpu_models.add(model)
             return self._separate_with(False, audio, sample_rate, model)
 
+    def _drop_damaged(self, models: list[str]) -> list[str]:
+        """Delete damaged model files so they are downloaded again; returns their names."""
+        dropped = []
+        for name in models:
+            path = self.model_dir / name
+            if name in self._verified or not path.exists():
+                continue
+            if model_file_ok(path):
+                self._verified.add(name)
+            else:
+                log.warning("Model file %s is damaged or incomplete; downloading it again", name)
+                path.unlink(missing_ok=True)
+                dropped.append(name)
+        return dropped
+
+    def _load(self, separator, models: list[str]) -> None:
+        self._drop_damaged(models)
+        target = models if len(models) > 1 else models[0]
+        try:
+            separator.load_model(model_filename=target)
+        except Exception as exc:
+            if not any(word in str(exc).lower() for word in _DAMAGED):
+                raise
+            # Damaged in a way the quick check missed: fetch every file of this model again, once.
+            for name in models:
+                (self.model_dir / name).unlink(missing_ok=True)
+                self._verified.discard(name)
+            try:
+                separator.load_model(model_filename=target)
+            except Exception as again:
+                raise SeparationError(
+                    f"The AI model {', '.join(models)} is damaged and could not be downloaded again ({again}). "
+                    "Connect to the internet and press Continue, or run setup.bat again."
+                ) from again
+
     def _separate_with(self, accelerated: bool, audio: np.ndarray, sample_rate: int, model: str) -> dict[str, np.ndarray]:
         separator = self._get_separator(accelerated)
         models = split_models(model)
         if not models:
             raise SeparationError("No model given")
         if self._loaded[accelerated] != model:
-            separator.load_model(model_filename=models if len(models) > 1 else models[0])
+            self._load(separator, models)
             self._loaded[accelerated] = model
 
         peak = float(np.abs(audio).max())
@@ -191,6 +228,44 @@ class AudioSeparatorBackend:
         if not stems:
             raise SeparationError(f"{model} produced no output")
         return stems
+
+
+_WEIGHTS = (".ckpt", ".pth", ".pt", ".th", ".bin", ".onnx")
+_DAMAGED = ("central directory", "corrupt", "pytorchstreamreader", "unpickl", "unexpected eof", "ran out of input",
+            "invalid load key", "protobuf", "incomplete")
+
+
+def model_file_ok(path: Path) -> bool:
+    """Is a downloaded model file complete?
+
+    The model downloader writes straight to the final file name, so an interrupted
+    download (setup closed, connection dropped) leaves a truncated file that looks
+    present and is never fetched again. PyTorch checkpoints are zip archives whose
+    directory sits at the very end, so a cut-off file is missing it; older pickle
+    checkpoints and ONNX files are test-loaded.
+    """
+    path = Path(path)
+    try:
+        suffix = path.suffix.lower()
+        if suffix not in _WEIGHTS:
+            return path.stat().st_size > 0  # configs are small and use custom YAML tags; only weights are checked
+        if path.stat().st_size < 1024:
+            return False
+        if suffix in (".ckpt", ".pth", ".pt", ".th", ".bin"):
+            if zipfile.is_zipfile(path):
+                with zipfile.ZipFile(path) as archive:
+                    last = max(archive.infolist(), key=lambda i: i.header_offset, default=None)
+                    return last is None or last.header_offset + last.compress_size <= path.stat().st_size
+            import torch
+
+            torch.load(str(path), map_location="cpu", weights_only=False)
+            return True
+        import onnx
+
+        onnx.load(str(path), load_external_data=False)
+        return True
+    except Exception:
+        return False
 
 
 def _fit_length(audio: np.ndarray, length: int) -> np.ndarray:
