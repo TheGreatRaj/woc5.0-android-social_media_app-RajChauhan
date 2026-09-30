@@ -14,7 +14,10 @@ dependencies = [
     "scipy>=1.10",
     "soundfile>=0.13",
     "soxr>=0.3",
-    "librosa>=0.10",
+    # librosa 1.0 dropped audioread and changed its audio API; the separation models
+    # (audio-separator) are built on 0.10/0.11 and import audioread themselves.
+    "librosa>=0.10,<1.0",
+    "audioread>=3.0",
     "pedalboard>=0.9",
     "pyloudnorm>=0.1.1",
     "imageio-ffmpeg>=0.5",
