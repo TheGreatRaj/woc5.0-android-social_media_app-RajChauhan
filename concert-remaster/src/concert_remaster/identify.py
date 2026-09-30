@@ -535,6 +535,32 @@ def _looks_like_live(title: str) -> bool:
     return bool(re.search(r"\b(live|concert|full set|tour|performance|cover|karaoke|8d|slowed|reverb|lofi|remix|mashup)\b", title, re.I))
 
 
+def identify_windows(read, start: float, end: float, libraries: list["ReferenceLibrary"], min_score: float,
+                     window: float = 20.0, hop: float = 10.0, progress=lambda fraction: None) -> list[dict]:
+    """Identify overlapping windows along a continuous stretch of music (a DJ set).
+
+    ``read(t0, t1)`` returns the audio between two times. Each window is matched
+    against the libraries (catalog, cache, your music folder); the result is a list
+    of ``{"start", "end", "key", "title", "artist", "score", "reference"}`` with
+    ``key`` None where nothing clearly matched.
+    """
+    results = []
+    times = np.arange(start, max(start, end - window / 2), hop)
+    for i, t0 in enumerate(times):
+        t1 = min(end, t0 + window)
+        sig = chroma_signature(read(t0, t1))
+        best, best_score = None, 0.0
+        for library in libraries:
+            ref, score = library.best_match(sig, min_score)
+            if ref is not None and score > best_score:
+                best, best_score = ref, score
+        results.append({"start": float(t0), "end": float(t1), "key": best.key if best else None,
+                        "title": best.title if best else "", "artist": best.artist if best else "",
+                        "score": best_score, "reference": asdict(best) if best else None})
+        progress((i + 1) / len(times))
+    return results
+
+
 def update_ytdlp() -> str:
     """YouTube changes often; this keeps the downloader current."""
     result = subprocess.run([sys.executable, "-m", "pip", "install", "-U", "yt-dlp[default]"], capture_output=True, text=True)

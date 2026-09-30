@@ -105,3 +105,22 @@ def test_continuous_set_splits_at_musical_changes(tmp_path):
     assert songs[1]["start"] == pytest.approx(60, abs=4) and songs[2]["start"] == pytest.approx(120, abs=4)
     curve = novelty_curve(features, 0, features.frames)
     assert curve.argmax() in range(100, 140) or curve.argmax() in range(220, 260)
+
+
+def test_split_by_identity_follows_the_tracks():
+    from concert_remaster.segmentation import split_by_identity
+
+    labels = ["A", "A", "A", None, "B", "B", "X", "B", "B", "C", "C", "C", None]
+    windows = [{"start": i * 10.0, "end": i * 10.0 + 20, "key": k, "title": k or "", "artist": "",
+                "score": 0.7 if k else 0.1, "reference": {"key": k} if k else None} for i, k in enumerate(labels)]
+    songs = split_by_identity(0.0, 140.0, windows, min_song_seconds=15)
+    assert [s["title"] for s in songs] == ["A", "B", "C"]
+    assert [s["start"] for s in songs] == [0.0, 45.0, 95.0] and songs[-1]["end"] == 140.0
+
+
+def test_split_by_identity_gives_up_when_little_is_known():
+    from concert_remaster.segmentation import split_by_identity
+
+    windows = [{"start": i * 10.0, "end": i * 10.0 + 20, "key": None, "title": "", "artist": "", "score": 0.0, "reference": None}
+               for i in range(10)]
+    assert split_by_identity(0.0, 110.0, windows, 15) is None

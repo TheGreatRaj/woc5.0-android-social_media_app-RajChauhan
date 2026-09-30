@@ -160,7 +160,13 @@ class Job:
                 except Exception as exc:
                     log.warning("Could not fetch the artist's songs: %s", exc)
             names = mix_stems(project.state["aliases"])
+            if only is None:
+                songs = self._identify_continuous(project, library, catalog, names, report, done, total) or songs
+                total = max(1, len(songs) + len(talks))
             for seg in songs:
+                if (seg.get("identification") or {}).get("method") == "set windows" and seg.get("reference"):
+                    done += 1
+                    continue
                 self._check()
                 if seg.get("locked"):  # the user set this one by hand
                     done += 1
@@ -178,6 +184,52 @@ class Job:
                 done += 1
                 project.update(lambda state, seg=seg: _replace_segment(state, seg))
         report("identify", 1.0, "Songs identified")
+
+    def _identify_continuous(self, project: Project, library, catalog, names, report, done, total) -> list[dict] | None:
+        """DJ sets / medleys: identify windows along each continuous stretch and split where the track changes."""
+        from .identify import identify_windows
+        from .segmentation import split_by_identity
+
+        s = project.settings
+        segments = project.state.get("segments") or []
+        libraries = [lib for lib in (catalog, library) if lib is not None and lib.entries]
+        if not libraries or s.segmentation.mode == "breaks":
+            return None
+        regions: list[list[dict]] = []
+        for seg in segments:
+            if seg["kind"] == "song" and not seg.get("locked"):
+                if regions and regions[-1] and abs(regions[-1][-1]["end"] - seg["start"]) < 0.6:
+                    regions[-1].append(seg)
+                    continue
+                regions.append([seg])
+            else:
+                regions.append([])
+        changed = False
+        for region in (r for r in regions if r):
+            start, end = region[0]["start"], region[-1]["end"]
+            continuous = s.segmentation.mode == "continuous" or (len(region) > 1 and end - start > s.segmentation.max_song_minutes * 60)
+            if not continuous:
+                continue
+
+            def read(t0, t1):
+                a, b = int(t0 * SAMPLE_RATE), int(t1 * SAMPLE_RATE)
+                return np.sum([read_stem(project.stem_path(n), a, b) for n in names], axis=0)
+
+            windows = identify_windows(read, start, end, libraries, s.identify.min_match_score,
+                                       progress=lambda f: report("identify", done / total, f"Following the set: {_clock(start + f * (end - start))}"))
+            songs = split_by_identity(start, end, windows, s.segmentation.min_song_seconds)
+            if not songs:
+                continue
+            ids = {seg["id"] for seg in region}
+            first = next(i for i, seg in enumerate(segments) if seg["id"] in ids)
+            segments = [seg for seg in segments if seg["id"] not in ids]
+            segments[first:first] = songs
+            changed = True
+        if not changed:
+            return None
+        segments = renumber(segments)
+        project.update(lambda state: state.__setitem__("segments", segments))
+        return [seg for seg in segments if seg["kind"] == "song"]
 
     def export(self) -> dict:
         from .render import render_project

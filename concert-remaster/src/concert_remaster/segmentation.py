@@ -346,3 +346,61 @@ def number_segments(segments: list[dict]) -> list[dict]:
         else:
             seg["track"] = None
     return segments
+
+
+def split_by_identity(start: float, end: float, windows: list[dict], min_song_seconds: float) -> list[dict] | None:
+    """Split a continuous stretch where the identified track changes (DJ sets).
+
+    Consecutive windows naming the same track form one song; a lone window
+    disagreeing with both neighbours is treated as noise. The boundary is put
+    halfway between the last window of one track and the first of the next,
+    which lands in the DJ's crossfade. Returns None if too little was
+    identified to trust (the novelty-based split is kept then).
+    """
+    if not windows:
+        return None
+    keys = [w["key"] for w in windows]
+    if sum(k is not None for k in keys) < max(2, 0.4 * len(keys)):
+        return None
+    # Smooth: a single window that disagrees with matching neighbours takes their label.
+    for i in range(1, len(keys) - 1):
+        if keys[i - 1] == keys[i + 1] and keys[i] != keys[i - 1] and keys[i - 1] is not None:
+            keys[i] = keys[i - 1]
+    # Unknown windows join the preceding track (a track's intro/outro often doesn't match).
+    for i in range(1, len(keys)):
+        if keys[i] is None:
+            keys[i] = keys[i - 1]
+    runs: list[list[int]] = []
+    for i, k in enumerate(keys):
+        if runs and keys[runs[-1][0]] == k:
+            runs[-1].append(i)
+        else:
+            runs.append([i])
+    hop = windows[1]["start"] - windows[0]["start"] if len(windows) > 1 else windows[0]["end"] - windows[0]["start"]
+    # Runs shorter than a song merge into the longer neighbour.
+    changed = True
+    while changed and len(runs) > 1:
+        changed = False
+        for i, run in enumerate(runs):
+            if len(run) * hop < min_song_seconds:
+                j = i - 1 if i == len(runs) - 1 or (i > 0 and len(runs[i - 1]) >= len(runs[i + 1])) else i + 1
+                merged = sorted(runs[j] + run)
+                runs[min(i, j)] = merged
+                del runs[max(i, j)]
+                changed = True
+                break
+    def centre(w):
+        return (w["start"] + w["end"]) / 2
+
+    songs = []
+    for i, run in enumerate(runs):
+        first, last = windows[run[0]], windows[run[-1]]
+        seg_start = start if i == 0 else (centre(windows[runs[i - 1][-1]]) + centre(first)) / 2
+        seg_end = end if i == len(runs) - 1 else (centre(last) + centre(windows[runs[i + 1][0]])) / 2
+        best = max((windows[j] for j in run), key=lambda w: w["score"])
+        songs.append({"kind": "song", "start": round(seg_start, 2), "end": round(seg_end, 2),
+                      "title": best["title"], "artist": best["artist"], "reference": best["reference"],
+                      "identification": {"score": best["score"], "method": "set windows",
+                                         "message": f"Identified in {len(run)} windows" if best["key"] else "Not identified",
+                                         "candidates": []}})
+    return songs
