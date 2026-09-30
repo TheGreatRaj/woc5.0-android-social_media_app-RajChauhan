@@ -56,6 +56,7 @@ class Transcriber:
         if self._model is None:
             from faster_whisper import WhisperModel
 
+            _expose_cuda_libraries()
             device = "cpu"
             if self.device in ("auto", "cuda"):
                 try:
@@ -101,6 +102,29 @@ class Transcriber:
         if max_seconds:
             audio = audio[..., : int(max_seconds * sample_rate)]
         return " ".join(s["text"] for s in self.segments(audio, sample_rate))
+
+
+def _expose_cuda_libraries() -> None:
+    """On Windows, let Whisper (CTranslate2) use the CUDA/cuDNN DLLs that ship inside PyTorch."""
+    import os
+    import sys
+
+    if os.name != "nt":
+        return
+    try:
+        import torch
+
+        lib = Path(torch.__file__).parent / "lib"
+        if lib.is_dir():
+            os.add_dll_directory(str(lib))
+            os.environ["PATH"] = str(lib) + os.pathsep + os.environ.get("PATH", "")
+    except Exception:  # CPU-only installs
+        pass
+    for base in sys.path:
+        nvidia = Path(base) / "nvidia"
+        if nvidia.is_dir():
+            for sub in nvidia.glob("*/bin"):
+                os.add_dll_directory(str(sub))
 
 
 def srt(entries: list[dict]) -> str:

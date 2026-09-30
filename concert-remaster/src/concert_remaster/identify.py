@@ -222,8 +222,11 @@ def _yt_dlp_options(cookies_browser: str = "") -> dict:
     options = {"quiet": True, "no_warnings": True, "noplaylist": True}
     if cookies_browser:
         options["cookiesfrombrowser"] = (cookies_browser,)
-    deno = next(iter(sorted(tools_dir().glob("deno*/deno*"))), None)
-    if deno and deno.is_file():
+    # yt-dlp needs a JavaScript runtime for YouTube; setup installs Deno next to Python.
+    candidates = [Path(sys.executable).with_name("deno.exe"), Path(sys.executable).with_name("deno"),
+                  *sorted(tools_dir().glob("deno*/deno*"))]
+    deno = next((c for c in candidates if c.is_file()), None)
+    if deno is not None:
         options["js_runtimes"] = {"deno": {"path": str(deno)}}
     return options
 

@@ -1,171 +1,142 @@
-# concert-remaster 🎤→🎧
+# Concert Remaster 🎤→🎧
 
-Turn a phone or handheld recording of a live show into something that sounds like the studio release:
-crowd noise gone, venue echo stripped off the vocal, every instrument split out and cleaned up, then
-remixed and mastered to streaming loudness.
+Turn your phone, watch or voice-recorder recordings of live shows into something that sounds like
+the released album: crowd noise and venue echo removed, every instrument separated into clean stems,
+each song found, named and matched to the tone of its studio version, then mixed and mastered.
+Built for whole concerts: 2–3 hour MP3/MP4/M4A recordings, bands or DJ sets.
 
-Everything runs **on your own machine**. The AI models (Roformer, MDX-Net, VR and Demucs) are
-downloaded once and then work offline on CPU, NVIDIA GPUs (CUDA) or Apple Silicon (MPS).
+**All the processing runs on your own PC** with local AI models (NVIDIA via CUDA, AMD via DirectML,
+or the CPU). The internet is only used, if you allow it, to look songs up and fetch their studio
+versions, which are then kept locally.
+
+## Install on Windows (one time)
+
+1. Download this repository as a ZIP and extract it anywhere with ~20 GB free.
+2. Double-click **`setup.bat`** (in the top folder). It:
+   - detects your graphics card (NVIDIA → CUDA, AMD → DirectML, otherwise CPU),
+   - installs a private Python 3.12 and the AI libraries for that card,
+   - installs ffmpeg,
+   - downloads **every AI model (~12 GB) and Whisper large-v3**, so the app then works fully offline,
+   - puts a **Concert Remaster** shortcut on your desktop.
+
+   Everything goes inside the `concert-remaster` folder; nothing is installed system-wide. If
+   anything fails (e.g. the connection drops), run `setup.bat` again; it continues where it stopped.
+   To choose the device yourself: `setup.bat -Gpu nvidia` / `-Gpu amd` / `-Gpu cpu`.
+3. Start the app with the desktop shortcut or **`start.bat`**.
+
+For your machines: the **laptop (RTX 3060)** is the one for full-quality runs of long shows. The
+**RX 580 desktop** uses DirectML, which is experimental: models that don't run there fall back to
+the 14400F CPU automatically, which is much slower.
+
+## Using the app
+
+1. **New project** → pick the recording (the file picker accepts MP3, MP4, M4A, WAV, FLAC and most
+   video files), choose the quality preset, optionally the artist's name, the show type, and what to
+   do when the artist talks. Analysis starts.
+2. **Analyze** runs on its own; you can close the window or press Stop at any time. Every finished
+   piece is kept, so pressing Continue later picks up where it stopped (even after a restart).
+3. **Review** the timeline: songs (purple), the artist talking (amber), applause (green). Drag the
+   edges, split or merge parts, fix titles, choose per part what happens (keep the talk with a clearer
+   voice, cut it, or mute the voice but keep the music under it), set extra levels per instrument,
+   and listen: original, separated, or a 30-second **remastered preview**.
+4. **Export**. You get:
 
 ```
-recording.mp4
-   │
-   ├─ decode, rebuild clipped peaks, remove rumble
-   ├─ AI: remove crowd noise ─────────────────────────────► crowd (optional blend-back)
-   ├─ AI: isolate the vocal
-   │     └─ AI: strip venue reverb → AI: denoise
-   ├─ AI: split the band → drums · bass · guitar · piano · other
-   ├─ studio chain per stem (EQ, gate, compression, de-ess, stereo placement, plate reverb)
-   ├─ auto-mix toward a studio balance
-   └─ master: glue compression, tonal-balance EQ, true-peak limiter, -14 LUFS
-         │
-         ▼
-   "Song (Remastered).wav"  +  stems/  +  report.json
+projects/<show>/output/
+  Songs/01 - Song Title (Artist).flac      each song, mastered
+  Stems/01 - Song Title (Artist)/          lead_vocals, backing_vocals, drums, bass, guitar,
+                                           piano, woodwinds, other  (balanced exactly as in the mix)
+  <show> - Full Concert.flac               the whole show, continuous, crossfaded
+  <show> - Concert Vibes.flac              songs + short applause, no talking
+  <show> - Full Concert.cue / Tracklist.txt
+  <show> - Full Concert.srt                what the artist said, as subtitles
+  Artist speech.txt, report.json
 ```
 
-## Install
+**Every parameter** is adjustable in **Settings** (per project, or as defaults for new projects):
+hardware, every AI model, restoration, song/speech detection, speech handling, audience, song
+identification, studio-reference matching, mix, mastering, export, and the full per-instrument chain
+(EQ bands, expander, compression, de-esser, stereo width, reverb, target level).
 
-You need Python 3.10+ and [ffmpeg](https://ffmpeg.org/download.html) (`brew install ffmpeg`,
-`sudo apt install ffmpeg`, or `winget install ffmpeg`).
+## What it does, step by step
 
-```bash
-cd concert-remaster
-pip install -e ".[cpu]"      # any computer, including Apple Silicon (uses the GPU through MPS)
-# or
-pip install -e ".[gpu]"      # NVIDIA GPU with CUDA
-```
-
-The first run downloads the models it needs (roughly 0.5–1 GB per model) into
-`~/.cache/concert-remaster/models`. After that no internet connection is needed.
-
-## Use it
-
-```bash
-concert-remaster "Live at the Roundhouse.mp4"
-```
-
-Results land in `remastered/<name>/`:
-
-| File | What it is |
+| Step | How |
 | --- | --- |
-| `<name> (Remastered).wav` | The finished master, 24-bit, -14 LUFS, -1 dBTP peak |
-| `stems/vocals.wav`, `drums.wav`, `bass.wav`, `guitar.wav`, `piano.wav`, `other.wav` | Cleaned, processed stems, balanced exactly as in the mix, so they line up in any DAW |
-| `stems_raw/` | (with `--raw-stems`) unprocessed model outputs, the crowd, and the reverb that was removed |
-| `report.json` | Models used, loudness of each stem, gains applied, final loudness and peak |
+| Read | ffmpeg decodes any audio/video in blocks (hours never sit in memory), SoX-quality resampling to 44.1 kHz |
+| Repair | Clipped peaks (overloaded phone mic) found by their flat tops across the whole file and redrawn with splines; rumble removed |
+| Crowd | **Mel-Band Roformer Crowd** separates the audience from the music |
+| Vocals | Ensemble of **BS-Roformer Resurrection + Mel-Roformer Beta 6X** (averaged in the frequency domain) |
+| Instruments | **BS-Roformer SW**: drums, bass, guitar, piano, other; then **MDX23C DrumSep** (kick, snare, toms, hi-hat, ride, crash) and a woodwind model (flute etc.) |
+| Vocal clean-up | **Mel-Roformer de-reverb** removes the venue echo, **Mel-Roformer denoise**, then a **karaoke model** splits lead and backing vocals |
+| Songs & speech | From the stems: music on/off, the crowd stem for applause, and pitch behaviour for talk vs singing (singers hold notes; speech glides). DJ/EDM sets are split where harmony and timbre change |
+| Identify | Offline: your music folder and every original fetched before. Online (optional): Shazam, Whisper-transcribed lyrics, iTunes/Deezer/YouTube search. Every candidate must pass a key- and tempo-independent melody match before it's used |
+| Studio tone | The original is separated the same way; each live instrument is EQ-matched to its studio counterpart and the mix balance copies the record. Nothing from the studio audio is mixed in: the performance stays 100% live |
+| Per instrument | Expander (bleed and room wash down), corrective + tone EQ, level-relative compression, de-esser, mono low end, width, plate reverb on the now-dry vocal; recreated top octave for band-limited recordings (e.g. a watch) |
+| Master | Glue compression, tonal balance (or the studio reference's), true-peak look-ahead limiter; −14 LUFS / −1 dBTP by default, and it stops short rather than crushing a song |
 
-More examples:
+Long jobs run in chunks with crossfaded overlaps and are saved piece by piece, so a crash, a closed
+lid or Stop never loses finished work.
 
-```bash
-# Several songs at once, FLAC output
-concert-remaster song1.m4a song2.m4a song3.m4a -o remastered --format flac
+## Quality presets and time
 
-# Make it sound like the studio version: match the tonal balance of a reference track
-concert-remaster live.wav --reference "studio version.flac"
+| Preset | Models | Use it for |
+| --- | --- | --- |
+| **ultra** (default) | everything above, 4 overlap passes | best result; leave it running overnight on a GPU |
+| **high** | single Mel-Roformer vocal model, no denoise/kit/lead-backing, 2 passes | about 3× faster, close in quality |
+| **fast** | MDX crowd model + one 6-stem pass | quick previews, CPU-only machines |
 
-# Keep a bit of the audience for a live-album feel (15 LU under the vocal)
-concert-remaster live.wav --keep-crowd -15
+Measured on a 4-core cloud CPU (no GPU), each second of audio took about 10 s for the crowd model,
+30 s for the ultra vocal ensemble, 5 s for the 6-instrument split and 5–9 s each for de-reverb,
+denoise and the lead/backing split. A GPU is many times faster, but a 3-hour show on ultra is still a
+job of several hours on an RTX 3060, so start it in the evening. The app shows progress and an
+estimate while it runs.
 
-# Louder master, vocal up 2 dB, drums down 1 dB
-concert-remaster live.wav --target-lufs -10 --gain vocals=2 --gain drums=-1
+## Recording tips
 
-# Best quality (use a GPU), or a fast preview
-concert-remaster live.wav --preset best
-concert-remaster live.wav --preset fast --stems 4
-
-# See every option / every model
-concert-remaster --help
-concert-remaster --list-presets
-```
-
-It also works as a library:
-
-```python
-from concert_remaster import RemasterSettings, remaster
-
-result = remaster("gig.mp4", "remastered", RemasterSettings(preset="best", crowd_db=-18))
-print(result.master_path, result.report["master"]["output_lufs"])
-```
-
-## Presets and speed
-
-| Preset | Crowd removal | Vocal isolation | Vocal clean-up | Band split |
-| --- | --- | --- | --- | --- |
-| `fast` | MDX-Net Crowd HQ | Demucs (one pass) | none | Demucs |
-| `balanced` (default) | Mel-Band Roformer Crowd | Mel-Band Roformer (Kim) | VR DeEcho-DeReverb | Demucs 6-stem / fine-tuned 4-stem |
-| `best` | Mel-Band Roformer Crowd | BS-Roformer (ViperX 1297) | Mel-Roformer de-reverb + denoise | Demucs, 2 shifts |
-
-The Roformer crowd model matters most. In a test with a known crowd-free version of a simulated
-phone recording, it improved the music from 10.3 dB to 17.5 dB signal-to-distortion. The lighter
-MDX-Net crowd model in `fast` took so much music with the crowd that it scored 3.6 dB, worse than
-doing nothing. Use `fast` for rough previews only.
-
-`--stems 6` (default) gives vocals, drums, bass, guitar, piano and other. `--stems 4` merges guitar and
-piano into "other" using the higher-quality fine-tuned Demucs. `--stems 2` is just vocals + band.
-
-Roformer models are heavy. On a 4-core cloud VM with no GPU, a 30-second clip took under 5
-minutes on `balanced` without the Demucs split. Per second of audio, BS-Roformer at its default 4 overlap
-passes took about 18 s. A full song on `best` wants a GPU; `balanced` is the practical CPU choice,
-and more CPU cores or a GPU (CUDA or Apple Silicon) cut these times substantially. Roformers process audio in overlapping 8-second windows:
-`balanced` uses 2 passes per window, and on a GPU you can raise `--overlap` to 4–8 for a slightly
-cleaner result. For very long recordings, `--chunk-seconds 300` keeps memory in check.
-
-## What each step does
-
-**Restoration.** Loud gigs overload phone microphones. Flat-topped, clipped peaks are detected and
-redrawn with a cubic spline before anything else touches the waveform, then DC offset and
-handling/wind rumble under 25 Hz are removed.
-
-**AI separation.** Crowd noise is taken out of the whole recording first, since it smears across
-every stem otherwise. The vocal is isolated next, and only the vocal gets de-reverb and denoise
-models, because those are trained on voice and damage instruments. The instrumental is then split
-into instruments. Any vocal leftovers the instrument model finds go into "other" so the vocal stem
-stays clean. Models are fed float audio with headroom and their outputs are scaled back, so stem
-levels stay sample-accurate and sum back to the recording.
-
-**Studio chain per stem.** Each instrument gets what an engineer would put on its track. A
-downward expander pushes bleed and room wash under the music. Corrective EQ cuts the boxy
-250–400 Hz build-up that rooms add, and tone EQ adds presence and air. Compression with thresholds
-relative to the stem's own level means it behaves the same on quiet or hot separations. The vocal
-is de-essed (split band, only above 5.5 kHz). Kick and bass are centred below 110–150 Hz, and
-mono-recorded guitars and keys are widened with a mono-compatible decorrelator. The vocal gets a
-short plate reverb to replace the venue reverb that was removed.
-
-**Auto-mix.** Loudness (LUFS) of each stem is measured and moved partway toward a studio balance
-(drums 2 LU under the vocal, bass and guitar 4 LU, keys 5 LU), at most 6 dB per stem. Stems where the
-model found nothing (a piano stem on a song with no piano) are detected and turned down, so their
-separation noise doesn't get boosted.
-
-**Mastering.** 2:1 bus compression glues the stems back together. A linear-phase EQ pulls the
-overall tilt toward the slope typical of commercial releases and cuts narrow resonances (room
-modes). With `--reference` it matches the reference's spectrum instead. A look-ahead limiter
-working on 4× oversampled true peaks hits the loudness target without exceeding -1 dBTP. If
-reaching the target would take more than 6 dB of limiting, it stops short rather than crushing
-the song.
+- **Galaxy S23 Ultra / Oppo Find X8 Ultra**: record in the highest-quality stereo mode (not "speech"
+  or "interview" modes, which filter music). Video recordings (MP4) work directly.
+- **Galaxy Watch 4**: watch recordings are mono and band-limited. The app widens them to stereo
+  (mono-compatible) and recreates the missing top end, but the phone will always capture more detail.
+- Point the mic at the stage, away from people shouting next to you, and avoid covering it.
 
 ## Honest limitations
 
-- AI separation is very good but not perfect. Busy, distorted or very reverberant recordings leave
-  artifacts, especially in the guitar/piano/other stems.
-- It can't restore what the microphone never captured. Phone mics roll off deep bass, and heavy
-  analog distortion (a mic capsule overloaded before the digital stage) can't be undone. Low end is
-  rebalanced, not invented.
-- Audience singing along is musically similar to the lead vocal and can survive crowd removal.
-- Process one song per file for best results. Very long files (full sets) need a lot of RAM.
-- Only remaster recordings you have the rights to share. Concert recordings usually contain other
-  people's copyrighted performances.
+- Separation is excellent but not perfect; very loud, distorted recordings leave artifacts,
+  mostly in the guitar/piano/other stems.
+- Nothing can restore what the mic never captured: deep bass a phone didn't record is rebalanced,
+  not invented, and analog overload distortion can't be undone.
+- An audience singing along is similar to the lead vocal and can survive crowd removal.
+- YouTube sometimes asks downloaders to "sign in to confirm you're not a bot". Pick your browser in
+  Settings → Song identification → *YouTube login from browser*, or give the song a file/link by hand.
+  If downloads stop working, run `setup.bat` again (it updates the downloader).
+- Rap is speech-like. It only counts as "talk" when the band is quiet, so rapped verses stay in songs.
+- Only share recordings you have the right to share.
+
+## Command line
+
+```bash
+concert-remaster                              # the app (same as start.bat)
+concert-remaster process show.mp4 --preset high --set speech.action=remove --set master.target_lufs=-10
+concert-remaster download-models              # fetch everything for offline use
+concert-remaster devices                      # which GPU will be used
+concert-remaster presets                      # models per preset
+```
+
+On Linux/macOS: `pip install -e ".[gpu,app]"` (or `[cpu,app]`) inside a Python 3.10–3.12
+environment with ffmpeg installed.
 
 ## Models and licences
 
 Separation runs through [python-audio-separator](https://github.com/nomadkaraoke/python-audio-separator)
-(MIT). The model weights come from the [Ultimate Vocal Remover](https://github.com/Anjok07/ultimatevocalremovergui)
-community and [Demucs](https://github.com/facebookresearch/demucs) (MIT). Check each model's licence
-before commercial use.
+(MIT) with models from the [Ultimate Vocal Remover](https://github.com/Anjok07/ultimatevocalremovergui)
+community (Roformer models by viperx, KimberleyJensen, unwa, anvuew, aufr33, jarredou and others) and
+[Demucs](https://github.com/facebookresearch/demucs). Speech-to-text is
+[faster-whisper](https://github.com/SYSTRAN/faster-whisper) (MIT). Check each model's licence before
+commercial use.
 
 ## Development
 
 ```bash
-pip install -e ".[dev]"
-pytest
+pip install -e ".[cpu,app,dev]"
+pytest              # uses a fake separation backend: runs in about two minutes, no downloads
 ```
-
-The test suite uses a fake separation backend, so it runs in seconds without downloading any models.
