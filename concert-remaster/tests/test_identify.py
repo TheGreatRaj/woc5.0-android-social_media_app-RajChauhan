@@ -1,0 +1,146 @@
+import numpy as np
+import pytest
+
+from concert_remaster.identify import (
+    Reference, ReferenceLibrary, _song_key, _split_artist_title, lyric_query, match_score, profile_similarity,
+)
+
+rng = np.random.default_rng(21)
+
+
+def song(frames=240):
+    """A chroma 'song': a chord progression held for a few frames each, like real harmony."""
+    chords = rng.random((12, frames // 8 + 1)) ** 4
+    chroma = np.repeat(chords, 8, axis=1)[:, :frames]
+    return chroma / np.linalg.norm(chroma, axis=0, keepdims=True)
+
+
+def live_version(chroma, stretch=1.1, shift=2, noise=0.15):
+    frames = chroma.shape[1]
+    idx = np.clip((np.arange(int(frames * stretch)) / stretch).astype(int), 0, frames - 1)
+    warped = np.roll(chroma[:, idx], shift, axis=0) + rng.random((12, idx.size)) * noise
+    return warped / np.linalg.norm(warped, axis=0, keepdims=True)
+
+
+def test_match_score_is_key_and_tempo_invariant():
+    original = song()
+    score, shift = match_score(live_version(original, stretch=1.15, shift=3), original)
+    unrelated, _ = match_score(live_version(song(), shift=3), original)
+    assert score > 0.5 and shift == 3  # the reference rolled up 3 semitones matches the live key
+    assert unrelated < 0.35
+
+
+def test_a_preview_is_found_inside_the_whole_song():
+    original = song(480)
+    preview = original[:, 200:320]
+    score, _ = match_score(live_version(original, stretch=0.95, shift=0), preview)
+    assert score > 0.5
+
+
+def _library(tmp_path, songs):
+    library = ReferenceLibrary(tmp_path / "refs")
+    for i, chroma in enumerate(songs):
+        path = tmp_path / f"song{i}.mp3"
+        path.write_bytes(b"x")
+        library.add(Reference(f"k{i}", f"Title {i}", "Artist", str(path), "library"), signature=chroma)
+    return library
+
+
+def test_library_picks_the_right_song_and_rejects_unknown_ones(tmp_path):
+    songs = [song() for _ in range(30)]
+    library = _library(tmp_path, songs)
+    ref, score = library.best_match(live_version(songs[17], stretch=1.08, shift=-1), min_score=0.45)
+    assert ref is not None and ref.title == "Title 17"
+    ref, score = library.best_match(live_version(song()), min_score=0.45)
+    assert ref is None  # an unreleased song must not be forced onto a catalog title
+
+
+def test_profile_prefilter_prefers_the_same_harmony():
+    a = song()
+    assert profile_similarity(live_version(a, shift=5), a) > profile_similarity(song(), a)
+
+
+@pytest.mark.parametrize("stem,expected", [
+    ("03 - Arijit Singh - Tum Hi Ho", ("Arijit Singh", "Tum Hi Ho")),
+    ("Levels", ("", "Levels")),
+])
+def test_file_names_to_artist_and_title(stem, expected):
+    assert _split_artist_title(stem) == expected
+
+
+def test_song_keys_group_versions():
+    assert _song_key('Tum Hi Ho (From "Aashiqui 2")') == _song_key("Tum Hi Ho") == "tum hi ho"
+
+
+def test_lyric_query_picks_a_distinctive_line():
+    text = "Oh oh oh. Hum tere bin ab reh nahi sakte, tere bina kya wajood mera! La la."
+    assert lyric_query(text).startswith("Hum tere bin")
+
+
+def test_an_interrupted_catalog_download_continues_without_duplicates(tmp_path, monkeypatch):
+    import soundfile as sf
+
+    import concert_remaster.identify as ident
+
+    tracks = [{"title": f"Song {i}", "artist": {"name": "DJ"}, "preview": f"https://cdn/{i}?token=%s", "duration": 200}
+              for i in range(6)]
+    calls = {"token": 0, "downloads": 0, "fail_after": 3}
+
+    def fake_json(url, timeout=15.0, attempts=3):
+        calls["token"] += 1  # preview links are signed: a new token on every listing
+        if "search/artist" in url:
+            return {"data": [{"id": 1, "name": "DJ", "nb_fan": 10}]}
+        if "/related" in url:
+            return {"data": []}
+        return {"data": [dict(t, preview=t["preview"] % calls["token"]) for t in tracks]}
+
+    def fake_download(cand, folder, *args):
+        if calls["downloads"] >= calls["fail_after"]:
+            raise KeyboardInterrupt  # the app was closed mid-download
+        calls["downloads"] += 1
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"{cand.title}.wav"
+        t = np.arange(44100 * 3) / 44100
+        sf.write(path, np.sin(2 * np.pi * (200 + 20 * calls["downloads"]) * t), 44100)
+        return path
+
+    monkeypatch.setattr(ident, "_get_json", fake_json)
+    monkeypatch.setattr(ident, "download", fake_download)
+    with pytest.raises(KeyboardInterrupt):
+        ident.network_catalog("DJ", tmp_path)
+    calls["fail_after"] = 100
+    library = ident.network_catalog("DJ", tmp_path)
+    assert len(library.entries) == 6 and calls["downloads"] == 6  # the first 3 were not fetched again
+    before = calls["downloads"]
+    assert len(ident.network_catalog("DJ", tmp_path).entries) == 6 and calls["downloads"] == before  # complete: reused
+
+
+def _one_chord(frames=240, root=0, noise=0.05):
+    chroma = rng.random((12, frames)) * noise
+    chroma[[root, (root + 4) % 12, (root + 7) % 12]] += 1.0
+    return chroma / np.linalg.norm(chroma, axis=0, keepdims=True)
+
+
+def test_a_one_chord_preview_does_not_match_every_static_stretch(tmp_path):
+    from concert_remaster.identify import MIN_HARMONIC_MOTION, harmonic_motion
+
+    songs = [song() for _ in range(20)] + [_one_chord()]
+    library = _library(tmp_path, songs)
+    assert harmonic_motion(songs[-1]) < MIN_HARMONIC_MOTION < harmonic_motion(songs[3])
+    # A build-up on one chord (another key) must not be named after the static preview ...
+    ref, _ = library.best_match(_one_chord(root=5), min_score=0.45)
+    assert ref is None
+    # ... while songs whose harmony moves still match their live versions.
+    ref, _ = library.best_match(live_version(songs[3], stretch=1.05, shift=3), min_score=0.45)
+    assert ref is not None and ref.title == "Title 3"
+
+
+def test_a_single_strong_window_on_a_static_track_is_not_enough():
+    from concert_remaster.segmentation import confident_spans
+
+    windows = [{"start": 0.0, "end": 20.0, "key": "hub", "title": "Hub", "artist": "X", "score": 0.83, "motion": 0.03, "reference": {}},
+               {"start": 10.0, "end": 30.0, "key": None, "title": "", "artist": "", "score": 0.0, "reference": None},
+               {"start": 20.0, "end": 40.0, "key": None, "title": "", "artist": "", "score": 0.0, "reference": None},
+               {"start": 30.0, "end": 50.0, "key": None, "title": "", "artist": "", "score": 0.0, "reference": None},
+               {"start": 40.0, "end": 60.0, "key": "song", "title": "Song", "artist": "Y", "score": 0.8, "motion": 0.25, "reference": {}}]
+    assert [s["key"] for s in confident_spans(windows)] == ["song"]
