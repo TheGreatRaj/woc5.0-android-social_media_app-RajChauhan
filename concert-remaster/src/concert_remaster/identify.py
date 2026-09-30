@@ -334,8 +334,8 @@ def artist_catalog(artist: str, root: Path | None = None, limit: int = 100, prog
     """
     slug = re.sub(r"[^a-z0-9]+", "-", artist.lower()).strip("-") or "artist"
     library = ReferenceLibrary((root or references_dir()) / "catalogs" / slug)
-    if not fetch or (library.entries and library.index_path.stat().st_mtime > time.time() - 30 * 86400):
-        return library  # offline, or fetched within the last month
+    if not fetch or _catalog_fresh(library):
+        return library  # offline, or completely fetched within the last month
     found: dict[str, Candidate] = {}
     try:
         url = "https://itunes.apple.com/search?" + urllib.parse.urlencode({"term": artist, "entity": "song", "limit": min(limit, 200)})
@@ -356,7 +356,7 @@ def artist_catalog(artist: str, root: Path | None = None, limit: int = 100, prog
     except Exception as exc:
         log.info("Deezer catalog failed: %s", exc)
     for i, cand in enumerate(list(found.values())[:limit], 1):
-        key = "cat-" + hashlib.sha1(cand.url.encode()).hexdigest()[:16]
+        key = "cat-" + _stable_key(cand)
         if key in library.entries:
             continue
         progress(f"Fetching {artist}'s songs ({i}/{min(len(found), limit)}): {cand.title}")
@@ -365,6 +365,8 @@ def artist_catalog(artist: str, root: Path | None = None, limit: int = 100, prog
             library.add(Reference(key, cand.title, cand.artist, str(path), cand.source, cand.duration, True, cand.url))
         except Exception as exc:
             log.info("Skipping %s: %s", cand.title, exc)
+    if found:
+        _mark_complete(library)
     return library
 
 
@@ -377,7 +379,7 @@ def network_catalog(artist: str, root: Path | None = None, related: int = 15, pe
     """
     slug = re.sub(r"[^a-z0-9]+", "-", artist.lower()).strip("-") or "artist"
     library = ReferenceLibrary((root or references_dir()) / "networks" / slug)
-    if not fetch or (library.entries and library.index_path.stat().st_mtime > time.time() - 30 * 86400):
+    if not fetch or _catalog_fresh(library):
         return library
     found: dict[str, Candidate] = {}
     try:
@@ -396,7 +398,7 @@ def network_catalog(artist: str, root: Path | None = None, related: int = 15, pe
     except Exception as exc:
         log.info("Deezer network failed: %s", exc)
     for i, cand in enumerate(found.values(), 1):
-        key = "net-" + hashlib.sha1(cand.url.encode()).hexdigest()[:16]
+        key = "net-" + _stable_key(cand)
         if key in library.entries:
             continue
         progress(f"Fetching songs from {artist}'s scene ({i}/{len(found)}): {cand.artist} - {cand.title}")
@@ -405,7 +407,25 @@ def network_catalog(artist: str, root: Path | None = None, related: int = 15, pe
             library.add(Reference(key, cand.title, cand.artist, str(path), cand.source, cand.duration, True, cand.url))
         except Exception as exc:
             log.info("Skipping %s: %s", cand.title, exc)
+    if found:
+        _mark_complete(library)
     return library
+
+
+def _stable_key(cand: "Candidate") -> str:
+    # Preview links are signed and expire, so identify a catalog entry by artist and title.
+    return hashlib.sha1(f"{cand.artist.casefold()}|{_song_key(cand.title)}".encode()).hexdigest()[:16]
+
+
+def _catalog_fresh(library: "ReferenceLibrary", days: float = 30.0) -> bool:
+    """Was this catalog completely fetched within ``days``? (An interrupted fetch continues.)"""
+    marker = library.root / "complete"
+    return bool(library.entries) and marker.exists() and marker.stat().st_mtime > time.time() - days * 86400
+
+
+def _mark_complete(library: "ReferenceLibrary") -> None:
+    library.root.mkdir(parents=True, exist_ok=True)
+    (library.root / "complete").write_text(time.strftime("%Y-%m-%d %H:%M:%S"), encoding="utf-8")
 
 
 def _deezer_artist(name: str) -> dict | None:

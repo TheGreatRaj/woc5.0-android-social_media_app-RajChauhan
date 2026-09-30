@@ -75,3 +75,41 @@ def test_song_keys_group_versions():
 def test_lyric_query_picks_a_distinctive_line():
     text = "Oh oh oh. Hum tere bin ab reh nahi sakte, tere bina kya wajood mera! La la."
     assert lyric_query(text).startswith("Hum tere bin")
+
+
+def test_an_interrupted_catalog_download_continues_without_duplicates(tmp_path, monkeypatch):
+    import soundfile as sf
+
+    import concert_remaster.identify as ident
+
+    tracks = [{"title": f"Song {i}", "artist": {"name": "DJ"}, "preview": f"https://cdn/{i}?token=%s", "duration": 200}
+              for i in range(6)]
+    calls = {"token": 0, "downloads": 0, "fail_after": 3}
+
+    def fake_json(url, timeout=15.0, attempts=3):
+        calls["token"] += 1  # preview links are signed: a new token on every listing
+        if "search/artist" in url:
+            return {"data": [{"id": 1, "name": "DJ", "nb_fan": 10}]}
+        if "/related" in url:
+            return {"data": []}
+        return {"data": [dict(t, preview=t["preview"] % calls["token"]) for t in tracks]}
+
+    def fake_download(cand, folder, *args):
+        if calls["downloads"] >= calls["fail_after"]:
+            raise KeyboardInterrupt  # the app was closed mid-download
+        calls["downloads"] += 1
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"{cand.title}.wav"
+        t = np.arange(44100 * 3) / 44100
+        sf.write(path, np.sin(2 * np.pi * (200 + 20 * calls["downloads"]) * t), 44100)
+        return path
+
+    monkeypatch.setattr(ident, "_get_json", fake_json)
+    monkeypatch.setattr(ident, "download", fake_download)
+    with pytest.raises(KeyboardInterrupt):
+        ident.network_catalog("DJ", tmp_path)
+    calls["fail_after"] = 100
+    library = ident.network_catalog("DJ", tmp_path)
+    assert len(library.entries) == 6 and calls["downloads"] == 6  # the first 3 were not fetched again
+    before = calls["downloads"]
+    assert len(ident.network_catalog("DJ", tmp_path).entries) == 6 and calls["downloads"] == before  # complete: reused
