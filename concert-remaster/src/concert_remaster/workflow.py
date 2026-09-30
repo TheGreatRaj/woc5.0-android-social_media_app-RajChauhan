@@ -150,6 +150,15 @@ class Job:
                                        s.identify.library_dir or None)
             library.scan_library(lambda m: report("identify", done / total, m))
             online = s.identify.online and internet_available()
+            catalog = None
+            if s.identify.artist_hint.strip():
+                from .identify import artist_catalog
+
+                try:
+                    catalog = artist_catalog(s.identify.artist_hint.strip(), library.root, fetch=online,
+                                             progress=lambda m: report("identify", done / total, m))
+                except Exception as exc:
+                    log.warning("Could not fetch the artist's songs: %s", exc)
             names = mix_stems(project.state["aliases"])
             for seg in songs:
                 self._check()
@@ -160,7 +169,7 @@ class Job:
                 mix = np.sum([read_stem(project.stem_path(n), a, b) for n in names], axis=0)
                 vocals = read_stem(project.stem_path("vocals"), a, b)
                 result = identify_song(mix, vocals, s.identify, library, transcriber, online,
-                                       lambda m: report("identify", done / total, f"{seg['title']}: {m}"))
+                                       lambda m: report("identify", done / total, f"{seg['title']}: {m}"), catalog)
                 seg["identification"] = {"score": result.score, "method": result.method, "message": result.message,
                                          "candidates": result.candidates[:5], "lyrics": result.lyrics[:500]}
                 if result.title:
