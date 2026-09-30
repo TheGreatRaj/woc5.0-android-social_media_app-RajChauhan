@@ -97,6 +97,21 @@ class AudioSeparatorBackend:
             # Must happen before torch initialises CUDA.
             os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
+    def device_label(self) -> str:
+        """Where the models will run, for progress messages (without loading a model)."""
+        if self.device == "cpu":
+            return "CPU"
+        try:
+            import torch
+
+            if self.device in ("auto", "cuda") and torch.cuda.is_available():
+                return f"GPU: {torch.cuda.get_device_name(0)}"
+        except Exception:
+            pass
+        if self.device == "directml":
+            return "GPU: DirectML"
+        return "CPU (no usable GPU)"
+
     def device_description(self) -> str:
         separator = self._get_separator(accelerated=True)
         return str(getattr(separator, "torch_device", "cpu"))

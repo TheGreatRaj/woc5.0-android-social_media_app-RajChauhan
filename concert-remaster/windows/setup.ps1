@@ -43,6 +43,12 @@ function Run($exe, [string[]] $arguments) {
     & $exe @arguments 2>&1 | ForEach-Object { "$_" }
     if ($LASTEXITCODE -ne 0) { throw "$([IO.Path]::GetFileName($exe)) failed (exit code $LASTEXITCODE). See $Log" }
 }
+function ExitCode($exe, [string[]] $arguments) {
+    # Runs a program, shows its output, and returns its exit code instead of stopping.
+    $ErrorActionPreference = "Continue"
+    & $exe @arguments 2>&1 | ForEach-Object { "$_" } | Out-Host
+    return $LASTEXITCODE
+}
 function RunQuiet($exe, [string[]] $arguments) {
     # For steps whose failure doesn't matter (e.g. removing a package that isn't there).
     $ErrorActionPreference = "Continue"
@@ -128,7 +134,24 @@ try {
 
     # 6. Check that the GPU is usable
     Step "Testing the processing device"
-    Run $Py @("-m", "concert_remaster", "devices")
+    if ($Gpu -eq "nvidia") {
+        $state = ExitCode $Py @("-m", "concert_remaster", "devices", "--require", "cuda")
+        if ($state -eq 3) {
+            # Something replaced PyTorch with the CPU-only build (plain PyPI PyTorch on Windows has no CUDA).
+            Info "PyTorch has no CUDA support; installing the CUDA build again"
+            Run $Uv @("pip", "install", "--python", $Py, "--reinstall-package", "torch", "--reinstall-package", "torchaudio",
+                      "torch", "torchaudio", "--index-url", "https://download.pytorch.org/whl/cu126")
+            $state = ExitCode $Py @("-m", "concert_remaster", "devices", "--require", "cuda")
+        }
+        if ($state -eq 0) { Ok "the AI runs on the NVIDIA GPU" }
+        else {
+            Write-Host "    The NVIDIA GPU can't be used yet, so the AI would run on the CPU (much slower)." -ForegroundColor Yellow
+            Write-Host "    See the message above: usually updating the NVIDIA driver and restarting fixes it." -ForegroundColor Yellow
+            Write-Host "    Setup continues; run it again after fixing to check." -ForegroundColor Yellow
+        }
+    } else {
+        Run $Py @("-m", "concert_remaster", "devices")
+    }
 
     # 7. All models, so the app never needs the internet again
     if (-not $SkipModels) {

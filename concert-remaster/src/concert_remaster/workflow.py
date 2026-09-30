@@ -87,7 +87,10 @@ class Job:
         base = 0.0
         prepare_source(self.project, self._stage_progress("source", base), self.cancel)
         base += _WEIGHTS["source"]
-        run_separation(self.project, self.backend, self._stage_progress("separation", base), self.cancel)
+        report = self._stage_progress("separation", base)
+        where = getattr(self.backend, "device_label", lambda: "")()
+        run_separation(self.project, self.backend, (lambda st, f, m: report(st, f, f"{m} · {where}")) if where else report,
+                       self.cancel)
         base += _WEIGHTS["separation"]
         self.detect_segments(force=redetect, base=base)
         base += _WEIGHTS["segments"]

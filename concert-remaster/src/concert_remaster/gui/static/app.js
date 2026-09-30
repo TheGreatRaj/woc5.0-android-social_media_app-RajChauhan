@@ -26,6 +26,15 @@ async function init() {
   const device = $("#device");
   if (d.cuda) { device.textContent = `NVIDIA · ${d.gpu}`; device.classList.add("good"); }
   else if (d.directml) { device.textContent = `AMD/DirectML · ${d.directml_device || "GPU"}`; device.classList.add("accent"); }
+  else if (d.problem) {
+    // An NVIDIA GPU is there but the AI can't use it: say why and how to fix it.
+    device.textContent = `⚠ GPU not used · CPU only`;
+    device.classList.add("bad");
+    device.title = `${d.problem}\n\nFix: ${d.fix}\n\n(click for details)`;
+    device.style.cursor = "pointer";
+    device.onclick = () => alert(`${d.problem}\n\nHow to fix: ${d.fix}\n\nPyTorch: ${d.torch || "?"} (CUDA: ${d.torch_cuda || "none"})\nNVIDIA driver: ${d.nvidia_driver || "?"}${d.cuda_error ? "\nCUDA said: " + d.cuda_error : ""}`);
+    toast(`${d.problem} ${d.fix}`, true);
+  }
   else { device.textContent = `CPU · ${d.cpu_threads} threads`; device.classList.add("warn"); }
   if (!info.ffmpeg) toast("ffmpeg was not found. Run setup.bat again.", true);
 

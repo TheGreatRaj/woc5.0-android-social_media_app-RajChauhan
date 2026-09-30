@@ -72,7 +72,8 @@ def build_parser() -> argparse.ArgumentParser:
     worker.add_argument("--only", nargs="*", help="segment ids for identify / studio")
 
     sub.add_parser("presets", help="list quality presets and their models")
-    sub.add_parser("devices", help="show the processing devices that will be used")
+    devices = sub.add_parser("devices", help="show the processing devices that will be used")
+    devices.add_argument("--require", choices=["cuda"], help="exit 3 if PyTorch has no CUDA build, 4 if CUDA can't use the GPU")
     return parser
 
 
@@ -97,7 +98,12 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"    {model}")
         return 0
     if command == "devices":
-        print(json.dumps(describe_devices(), indent=2))
+        info = describe_devices()
+        print(json.dumps(info, indent=2))
+        if info.get("problem"):
+            print(f"\n{info['problem']}\nFix: {info['fix']}")
+        if getattr(args, "require", None) == "cuda" and not info["cuda"]:
+            return 3 if not info.get("torch_cuda") else 4
         return 0
     if command == "download-models":
         return download_models(args.preset, args.whisper)
@@ -125,16 +131,65 @@ def _log_to_file() -> None:
         pass
 
 
+# PyTorch's CUDA 12.x builds need at least this NVIDIA driver on Windows (CUDA 12 minor-version compatibility).
+MIN_NVIDIA_DRIVER = (527, 41)
+
+
+def _nvidia_gpus() -> list[dict]:
+    """NVIDIA GPUs and their driver version, from nvidia-smi or (Windows) the device list."""
+    import shutil
+    import subprocess
+
+    flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    smi = shutil.which("nvidia-smi") or (r"C:\Windows\System32\nvidia-smi.exe" if os.name == "nt" else None)
+    if smi and os.path.exists(smi):
+        try:
+            out = subprocess.run([smi, "--query-gpu=name,driver_version", "--format=csv,noheader"], capture_output=True,
+                                 text=True, timeout=20, creationflags=flags).stdout
+            gpus = [dict(zip(("name", "driver"), (x.strip() for x in line.split(",", 1)))) for line in out.splitlines() if "," in line]
+            if gpus:
+                return gpus
+        except Exception:
+            pass
+    if os.name == "nt":
+        try:
+            script = "Get-CimInstance Win32_VideoController | ForEach-Object { $_.Name + '|' + $_.DriverVersion }"
+            out = subprocess.run(["powershell", "-NoProfile", "-Command", script], capture_output=True, text=True,
+                                 timeout=30, creationflags=flags).stdout
+            gpus = []
+            for line in out.splitlines():
+                name, _, version = line.strip().partition("|")
+                if "NVIDIA" in name.upper():
+                    gpus.append({"name": name, "driver": nvidia_driver_from_windows(version)})
+            return gpus
+        except Exception:
+            pass
+    return []
+
+
+def nvidia_driver_from_windows(version: str) -> str:
+    """Windows reports NVIDIA driver 552.22 as 31.0.15.5222: the last five digits are the driver."""
+    digits = version.replace(".", "")[-5:]
+    return f"{int(digits[:3])}.{digits[3:]}" if len(digits) == 5 and digits.isdigit() else version
+
+
 def describe_devices() -> dict:
+    """Which processor the AI will use, and if an NVIDIA GPU is left unused, why and how to fix it."""
     info: dict = {"cuda": False, "directml": False, "cpu_threads": os.cpu_count()}
     try:
         import torch
 
         info["torch"] = torch.__version__
+        info["torch_cuda"] = torch.version.cuda  # None for a CPU-only build
         if torch.cuda.is_available():
             info["cuda"] = True
             info["gpu"] = torch.cuda.get_device_name(0)
             info["gpu_memory_gb"] = round(torch.cuda.get_device_properties(0).total_memory / 2**30, 1)
+        elif torch.version.cuda:
+            try:
+                torch.cuda.init()
+            except Exception as exc:
+                info["cuda_error"] = str(exc).strip().splitlines()[0][:300]
     except Exception as exc:
         info["torch_error"] = str(exc)
     try:
@@ -145,8 +200,32 @@ def describe_devices() -> dict:
             info["directml_device"] = torch_directml.device_name(0)
     except Exception:
         pass
+    nvidia = [] if info["cuda"] else _nvidia_gpus()
+    if nvidia:
+        info["nvidia_gpu"], info["nvidia_driver"] = nvidia[0]["name"], nvidia[0]["driver"]
+        info["problem"], info["fix"] = _why_no_cuda(info)
     info["recommended"] = "cuda" if info["cuda"] else "directml" if info["directml"] else "cpu"
     return info
+
+
+def _why_no_cuda(info: dict) -> tuple[str, str]:
+    gpu = info.get("nvidia_gpu", "the NVIDIA GPU")
+    if "torch_error" in info:
+        return f"The AI libraries could not start ({info['torch_error']}).", "Run setup.bat again to repair them."
+    if not info.get("torch_cuda"):
+        return (f"{gpu} is not used: the installed PyTorch ({info.get('torch')}) has no CUDA support, so the AI runs on the CPU.",
+                "Run setup.bat again: it reinstalls the CUDA build of PyTorch (or run: setup.bat -Gpu nvidia).")
+    try:
+        driver = tuple(int(x) for x in str(info.get("nvidia_driver", "")).split(".")[:2])
+    except ValueError:
+        driver = ()
+    if driver and driver < MIN_NVIDIA_DRIVER:
+        return (f"{gpu} is not used: its driver ({info['nvidia_driver']}) is too old for CUDA {info['torch_cuda']}.",
+                "Update the NVIDIA driver (GeForce Experience / NVIDIA App, or nvidia.com/drivers), restart, then start the app again.")
+    detail = f" ({info['cuda_error']})" if info.get("cuda_error") else ""
+    return (f"{gpu} is not available to CUDA{detail}.",
+            "Update the NVIDIA driver and restart Windows. On laptops, make sure the NVIDIA GPU isn't disabled "
+            "(Device Manager, or the laptop's power/graphics mode).")
 
 
 def download_models(preset: str, whisper: str) -> int:
