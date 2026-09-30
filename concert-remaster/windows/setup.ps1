@@ -36,8 +36,17 @@ function Download($url, $dest) {
     }
 }
 function Run($exe, [string[]] $arguments) {
-    & $exe @arguments
+    # Tools like uv print their progress to stderr. Windows PowerShell 5.1 turns such lines into
+    # errors (fatal here, because of "Stop" above), so show them as normal text and judge success
+    # by the exit code only.
+    $ErrorActionPreference = "Continue"
+    & $exe @arguments 2>&1 | ForEach-Object { "$_" }
     if ($LASTEXITCODE -ne 0) { throw "$([IO.Path]::GetFileName($exe)) failed (exit code $LASTEXITCODE). See $Log" }
+}
+function RunQuiet($exe, [string[]] $arguments) {
+    # For steps whose failure doesn't matter (e.g. removing a package that isn't there).
+    $ErrorActionPreference = "Continue"
+    & $exe @arguments 2>&1 | Out-Null
 }
 
 try {
@@ -99,7 +108,7 @@ try {
     Run $Uv @("pip", "install", "--python", $Py, "-e", "$App[$extra,app]")
     if ($runtime) {
         # Whisper pulls in the CPU onnxruntime, which would hide the GPU build; keep only the GPU one.
-        & $Uv pip uninstall --python $Py onnxruntime 2>$null
+        RunQuiet $Uv @("pip", "uninstall", "--python", $Py, "onnxruntime")
         Run $Uv @("pip", "install", "--python", $Py, "--reinstall-package", $runtime, $runtime)
     }
     Run $Uv @("pip", "install", "--python", $Py, "--upgrade", "yt-dlp[default]")   # YouTube changes often
