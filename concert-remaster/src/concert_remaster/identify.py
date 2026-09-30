@@ -125,6 +125,20 @@ class Reference:
     url: str = ""
 
 
+# Harmony-based matching needs harmony that moves. A preview that is one sustained chord (an
+# EDM build or drop) matches any other one-chord stretch in some key, so it would "win" all over
+# a set. Below this much motion, a song is left to audio fingerprinting (Shazam) instead.
+MIN_HARMONIC_MOTION = 0.06
+
+
+def harmonic_motion(signature: np.ndarray) -> float:
+    """How much the harmony changes: mean distance of each chroma frame from the average chord."""
+    c = signature / (np.linalg.norm(signature, axis=0, keepdims=True) + 1e-9)
+    mean = c.mean(axis=1)
+    mean /= np.linalg.norm(mean) + 1e-9
+    return float(np.mean(1.0 - mean @ c))
+
+
 class ReferenceLibrary:
     """Studio originals available offline: your own music folder plus everything fetched before."""
 
@@ -154,6 +168,14 @@ class ReferenceLibrary:
                 return None
             np.save(path, chroma_signature(load_audio(entry["path"])))  # rebuild after an upgrade
         return np.load(path)
+
+    def motion(self, key: str, sig: np.ndarray | None = None) -> float:
+        """Harmonic motion of a reference (cached per library)."""
+        cache = self.__dict__.setdefault("_motion", {})
+        if key not in cache:
+            sig = self.signature(key) if sig is None else sig
+            cache[key] = harmonic_motion(sig) if sig is not None else 0.0
+        return cache[key]
 
     def scan_library(self, progress=lambda message: None) -> int:
         """Index new or changed files in the user's music folder (once; cached)."""
@@ -185,10 +207,12 @@ class ReferenceLibrary:
         the winner must also stand out from the rest (a robust z-score of at least
         ``min_standout``): in a large catalog some unrelated song always scores fairly high.
         """
+        if harmonic_motion(live_signature) < MIN_HARMONIC_MOTION:
+            return None, 0.0  # a static stretch can't be told apart by its harmony
         candidates = []
         for key, entry in self.entries.items():
             sig = self.signature(key)
-            if sig is None or not Path(entry["path"]).exists():
+            if sig is None or not Path(entry["path"]).exists() or self.motion(key, sig) < MIN_HARMONIC_MOTION:
                 continue
             candidates.append((profile_similarity(live_signature, sig), key, entry, sig))
         candidates.sort(key=lambda c: c[0], reverse=True)
@@ -636,9 +660,10 @@ def identify_windows(read, start: float, end: float, libraries: list["ReferenceL
             ref, score = library.best_match(sig, min_score)
             if ref is not None and score > best_score:
                 best, best_score = ref, score
+        motion = next((lib.motion(best.key) for lib in libraries if best and best.key in lib.entries), 0.0)
         results.append({"start": float(t0), "end": float(t1), "key": best.key if best else None,
                         "title": best.title if best else "", "artist": best.artist if best else "",
-                        "score": best_score, "reference": asdict(best) if best else None})
+                        "score": best_score, "motion": round(motion, 3), "reference": asdict(best) if best else None})
         progress((i + 1) / len(times))
     return results
 

@@ -113,3 +113,34 @@ def test_an_interrupted_catalog_download_continues_without_duplicates(tmp_path, 
     assert len(library.entries) == 6 and calls["downloads"] == 6  # the first 3 were not fetched again
     before = calls["downloads"]
     assert len(ident.network_catalog("DJ", tmp_path).entries) == 6 and calls["downloads"] == before  # complete: reused
+
+
+def _one_chord(frames=240, root=0, noise=0.05):
+    chroma = rng.random((12, frames)) * noise
+    chroma[[root, (root + 4) % 12, (root + 7) % 12]] += 1.0
+    return chroma / np.linalg.norm(chroma, axis=0, keepdims=True)
+
+
+def test_a_one_chord_preview_does_not_match_every_static_stretch(tmp_path):
+    from concert_remaster.identify import MIN_HARMONIC_MOTION, harmonic_motion
+
+    songs = [song() for _ in range(20)] + [_one_chord()]
+    library = _library(tmp_path, songs)
+    assert harmonic_motion(songs[-1]) < MIN_HARMONIC_MOTION < harmonic_motion(songs[3])
+    # A build-up on one chord (another key) must not be named after the static preview ...
+    ref, _ = library.best_match(_one_chord(root=5), min_score=0.45)
+    assert ref is None
+    # ... while songs whose harmony moves still match their live versions.
+    ref, _ = library.best_match(live_version(songs[3], stretch=1.05, shift=3), min_score=0.45)
+    assert ref is not None and ref.title == "Title 3"
+
+
+def test_a_single_strong_window_on_a_static_track_is_not_enough():
+    from concert_remaster.segmentation import confident_spans
+
+    windows = [{"start": 0.0, "end": 20.0, "key": "hub", "title": "Hub", "artist": "X", "score": 0.83, "motion": 0.03, "reference": {}},
+               {"start": 10.0, "end": 30.0, "key": None, "title": "", "artist": "", "score": 0.0, "reference": None},
+               {"start": 20.0, "end": 40.0, "key": None, "title": "", "artist": "", "score": 0.0, "reference": None},
+               {"start": 30.0, "end": 50.0, "key": None, "title": "", "artist": "", "score": 0.0, "reference": None},
+               {"start": 40.0, "end": 60.0, "key": "song", "title": "Song", "artist": "Y", "score": 0.8, "motion": 0.25, "reference": {}}]
+    assert [s["key"] for s in confident_spans(windows)] == ["song"]

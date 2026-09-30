@@ -410,8 +410,9 @@ def confident_spans(windows: list[dict], strong: float = 0.7, max_gap: int = 2) 
     """Stretches of a set where one track was clearly heard.
 
     Windows naming the same track, with at most ``max_gap`` unknown windows between
-    them, form a span; a span counts when at least two windows agree or one matched
-    very strongly (``strong``). Lone weak matches are ignored as noise.
+    them, form a span; a span counts when at least two windows agree, or one matched
+    very strongly (``strong``) on a track whose harmony clearly moves (a near-static
+    track can match by chance). Lone weak matches are ignored as noise.
     """
     spans: list[dict] = []
     current: dict | None = None
@@ -436,7 +437,7 @@ def confident_spans(windows: list[dict], strong: float = 0.7, max_gap: int = 2) 
     for span in spans:
         ws = span["windows"]
         best = max(ws, key=lambda w: w["score"])
-        if len(ws) >= 2 or best["score"] >= strong:
+        if len(ws) >= 2 or (best["score"] >= strong and best.get("motion", 1.0) >= 0.1):
             out.append({"key": span["key"], "first": (ws[0]["start"] + ws[0]["end"]) / 2,
                         "last": (ws[-1]["start"] + ws[-1]["end"]) / 2, "count": len(ws), "best": best})
     # The same track heard again right after an interruption is one span.
