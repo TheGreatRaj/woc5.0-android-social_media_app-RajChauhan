@@ -195,6 +195,8 @@ class MixSettings:
                                 help="Stems where the model found nothing are turned down by this much.")
     stem_gains_db: dict = param(label="Stem gains", factory=dict, kind="gains", help="Extra gain per stem after auto-mixing.")
     muted_stems: list = param(label="Muted stems", factory=list, kind="stems")
+    drum_kit: bool = param(False, "Mix drums piece by piece",
+                           help="Kick, snare, toms, hi-hat, ride and crash get their own mixer tracks instead of one drum track.")
 
 
 @dataclass

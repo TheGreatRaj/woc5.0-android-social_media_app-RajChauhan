@@ -48,7 +48,8 @@ def auto_balance(
     loudest = max(finite.values())
     ghosts = sorted(name for name in stems if name not in finite or finite[name] < loudest - ghost_threshold_lu)
     audible = {name: value for name, value in finite.items() if name not in ghosts}
-    reference = "vocals" if "vocals" in audible else max(audible, key=audible.get)
+    anchors = [n for n in ("vocals", "lead_vocals") if n in audible]
+    reference = anchors[0] if anchors else max(audible, key=audible.get)
     reference_target = profile_for(reference, profiles).balance_db
 
     gains: dict[str, float] = {}
@@ -71,3 +72,20 @@ def sum_stems(stems: dict[str, np.ndarray], gains_db: dict[str, float]) -> np.nd
     for name, audio in stems.items():
         mix[:, : audio.shape[-1]] += audio * np.float32(db_to_gain(gains_db.get(name, 0.0)))
     return mix
+
+
+def pan_stereo(audio: np.ndarray, pan: float) -> np.ndarray:
+    """Pan a stereo stem like the Web Audio StereoPannerNode, so the app's mixer and the export agree.
+
+    ``pan`` -1 = hard left, 0 = unchanged, 1 = hard right. Panning one way folds the
+    other channel in with a constant-power law.
+    """
+    pan = float(np.clip(pan, -1.0, 1.0))
+    if abs(pan) < 1e-4:
+        return audio
+    left, right = audio[0], audio[1]
+    x = pan + 1.0 if pan <= 0 else pan
+    g_left, g_right = np.float32(np.cos(x * np.pi / 2)), np.float32(np.sin(x * np.pi / 2))
+    if pan <= 0:
+        return np.stack([left + right * g_left, right * g_right]).astype(np.float32)
+    return np.stack([left * g_left, right + left * g_right]).astype(np.float32)

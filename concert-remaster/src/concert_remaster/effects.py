@@ -24,7 +24,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 
 import numpy as np
-from scipy.ndimage import median_filter, percentile_filter, uniform_filter, uniform_filter1d
+from scipy.ndimage import maximum_filter1d, median_filter, percentile_filter, uniform_filter, uniform_filter1d
 
 from .restoration import istft, stft
 
@@ -53,8 +53,14 @@ def _frames(audio: np.ndarray, sample_rate: int, n_fft: int = 2048):
     return spec, freqs, mono, hop
 
 
-def detect_effects(ambience: np.ndarray, sample_rate: int, sensitivity: float = 0.5) -> list[EffectEvent]:
-    """Find effect bursts in the crowd/ambience stem (or the raw recording)."""
+def detect_effects(ambience: np.ndarray, sample_rate: int, sensitivity: float = 0.5,
+                   music: np.ndarray | None = None) -> list[EffectEvent]:
+    """Find effect bursts in the crowd/ambience stem.
+
+    ``music`` (the other stems summed) guards against music that bled into the crowd
+    stem: kick drums look like booms and noise risers like jets there, but they rise
+    and fall together with the music, while a real effect jumps out of it.
+    """
     spec, freqs, mono, hop = _frames(ambience, sample_rate)
     if spec.shape[0] < 50:
         return []
@@ -93,23 +99,53 @@ def detect_effects(ambience: np.ndarray, sample_rate: int, sensitivity: float = 
     low_share = low_db - energy_db
     rise = low_db - np.concatenate([np.full(3, low_db[0]), low_db[:-3]])
     boom_onsets = np.flatnonzero((rise > 12) & (low_db - base_low > surge + 4))
-    for i in _thin(boom_onsets, int(0.5 / HOP_S)):
-        if np.max(low_share[i : i + 10]) < -10:
+    last = -10**9
+    for i in boom_onsets:  # validate first, then thin, so a rejected wobble can't hide the real onset
+        if i - last <= int(0.5 / HOP_S) or np.max(low_share[i : i + 10]) < -10:
             continue
-        tail = low_db[i : i + int(2.0 / HOP_S)]
-        decay = int(np.argmax(tail < low_db[i] - 15)) if np.any(tail < low_db[i] - 15) else tail.size
+        peak = i + int(np.argmax(low_db[i : i + 10]))
+        tail = low_db[peak : peak + int(2.0 / HOP_S)]
+        decay = int(np.argmax(tail < low_db[peak] - 15)) if np.any(tail < low_db[peak] - 15) else tail.size
         if decay * HOP_S >= 0.3:
-            events.append(EffectEvent("firework", max(0.0, (i - 3) * HOP_S), (i + decay) * HOP_S + 0.5, float(low_db[i] - base_low[i])))
+            events.append(EffectEvent("firework", max(0.0, (i - 3) * HOP_S), (peak + decay) * HOP_S + 0.5,
+                                      float(low_db[peak] - base_low[peak])))
+            last = i
 
     # Confetti: a near-instant broadband pop that dies away at once (a crowd suddenly
     # getting loud jumps just as fast, but stays loud).
     jump = energy_db - np.concatenate([[energy_db[0]], energy_db[:-1]])
     pops = np.flatnonzero((jump > surge + 6) & (flatness > 0.25) & (energy_db - base > surge + 4))
-    for i in _thin(pops, int(0.5 / HOP_S)):
+    last = -10**9
+    for i in pops:
         after = energy_db[i + 5 : i + 15]
-        if after.size and np.median(after) > energy_db[i] - 6:
+        if i - last <= int(0.5 / HOP_S) or (after.size and np.median(after) > energy_db[i] - 6):
             continue
         events.append(EffectEvent("confetti", max(0.0, (i - 2) * HOP_S), (i + int(1.2 / HOP_S)) * HOP_S, float(energy_db[i] - base[i])))
+        last = i
+
+    if music is not None and events:
+        m_spec, _, _, _ = _frames(music, sample_rate)
+        n = min(m_spec.shape[0], spec.shape[0])
+        m_energy = 10 * np.log10(m_spec[:n].sum(axis=1) + 1e-12)
+        m_low = uniform_filter1d(10 * np.log10(m_spec[:n, low].sum(axis=1) + 1e-12), 3, mode="nearest")
+        rel = energy_db[:n] - m_energy
+        rel_low = low_db[:n] - m_low
+        rel_base = percentile_filter(rel, 50, size=win, mode="nearest")
+        rel_low_base = percentile_filter(rel_low, 50, size=win, mode="nearest")
+        need = 6.0 + 4.0 * (1.0 - sensitivity)
+        kept = []
+        for e in events:
+            a, b = int(e.start / HOP_S), min(n, int(e.end / HOP_S) + 1)
+            if b <= a:
+                continue
+            r, rb, level = (rel_low, rel_low_base, low_db) if e.kind == "firework" else (rel, rel_base, energy_db)
+            jump = r[a:b] - rb[a:b]
+            # A boom or pop must stand out from the music at its loudest moment; a jet all the way through.
+            peak = int(np.argmax(level[a:min(b, a + 15)]))
+            stands = np.median(jump) if e.kind == "co2" else jump[peak]
+            if float(stands) > need:
+                kept.append(e)
+        events = kept
 
     return _merge(sorted(events, key=lambda e: e.start))
 
@@ -122,14 +158,6 @@ def _events(mask: np.ndarray, kind: str, excess: np.ndarray, min_s: float, pad_b
         if (b - a) * HOP_S >= min_s:
             out.append(EffectEvent(kind, max(0.0, a * HOP_S - pad_before), b * HOP_S + pad_after, float(np.max(excess[a:b]))))
     return out
-
-
-def _thin(indices: np.ndarray, gap: int) -> list[int]:
-    kept: list[int] = []
-    for i in indices:
-        if not kept or i - kept[-1] > gap:
-            kept.append(int(i))
-    return kept
 
 
 def _merge(events: list[EffectEvent]) -> list[EffectEvent]:
@@ -145,7 +173,7 @@ def _merge(events: list[EffectEvent]) -> list[EffectEvent]:
 
 
 def repair(audio: np.ndarray, sample_rate: int, events: list[EffectEvent], amount: float = 1.0,
-           reference: np.ndarray | None = None, context_s: float = 2.5, margin_db: float = 2.0,
+           reference: np.ndarray | None = None, context_s: float = 2.5, margin_db: float = 3.0,
            n_fft: int = 2048, block_frames: int = 48) -> np.ndarray:
     """Remove effect sound from a music stem during ``events``, in two steps.
 
@@ -167,21 +195,40 @@ def repair(audio: np.ndarray, sample_rate: int, events: list[EffectEvent], amoun
     fps = sample_rate / hop
     if reference is not None:
         ref = stft(reference, n_fft, hop)
-        block = block_frames
+        original = np.abs(spec)
+        ctx = int(context_s * fps)
         for e in events:
             a, b = int(e.start * fps), min(spec.shape[2], int(e.end * fps) + 1)
-            if b - a < 4:
+            around = np.r_[max(0, a - ctx):a, b:min(spec.shape[2], b + ctx)]
+            if b - a < 4 or around.size < 4:
                 continue
             s_part, r_part = spec[:, :, a:b], ref[:, :, a:b]
-            # Masks drift during an event, so estimate the leak in short overlapping blocks.
-            k = min(block, b - a)
+            # How the stem follows the crowd stem, estimated in short overlapping blocks
+            # (masks drift during an event).
+            k = min(block_frames, b - a)
             cross = uniform_filter1d(s_part * np.conj(r_part), k, axis=2, mode="nearest")
             r_power = uniform_filter1d(np.abs(r_part) ** 2, k, axis=2, mode="nearest") + 1e-12
             s_power = uniform_filter1d(np.abs(s_part) ** 2, k, axis=2, mode="nearest") + 1e-12
             coherence = np.abs(cross) ** 2 / (r_power * s_power)
             weight = np.clip((coherence - 0.1) / 0.4, 0.0, 1.0) * amount
+            # A stem never holds more of an effect than the crowd stem itself; this also stops
+            # music that bleeds into the crowd stem from being read as a (huge) leak.
+            coef = cross / r_power
+            coef = coef * np.minimum(1.0, 1.0 / np.maximum(np.abs(coef), 1e-12))
+            # The crowd stem also carries some of the music. Only its surge above its usual
+            # level is the effect, so only that part is cancelled. (A high percentile: music in
+            # the crowd stem comes and goes with the notes and must not count as a surge.)
+            r_usual = np.percentile(np.abs(ref[:, :, around]), 90, axis=2, keepdims=True)
+            surge = r_part * np.clip(1.0 - 1.4 * r_usual / np.maximum(np.abs(r_part), 1e-12), 0.0, 1.0)
             ramp = np.minimum(1.0, np.minimum(np.arange(b - a) + 1, np.arange(b - a)[::-1] + 1) / 4.0)
-            spec[:, :, a:b] = s_part - (cross / r_power) * r_part * weight * ramp[None, None, :]
+            fixed = s_part - coef * surge * weight * ramp[None, None, :]
+            # Guard: cancelling may only take energy away, and never below the stem's usual level.
+            before = original[:, :, a:b]
+            floor = np.median(original[:, :, around], axis=2, keepdims=True) * 10 ** (-3 / 20)
+            size = np.abs(fixed)
+            target = np.clip(size, np.minimum(before, floor), before)
+            phase = np.where(size > 1e-9, fixed / np.maximum(size, 1e-12), s_part / np.maximum(before, 1e-12))
+            spec[:, :, a:b] = phase * target
     mag = np.abs(spec).mean(axis=0)  # linked stereo
     frames = mag.shape[1]
     gain = np.ones_like(mag)
@@ -193,7 +240,8 @@ def repair(audio: np.ndarray, sample_rate: int, events: list[EffectEvent], amoun
         context = np.concatenate([mag[:, max(0, a - ctx):a], mag[:, b:min(frames, b + ctx)]], axis=1)
         if context.shape[1] < 4:
             continue
-        ceiling = np.percentile(context, 90, axis=1, keepdims=True) * 10 ** (margin_db / 20)
+        # Lenient to notes moving by a bin or two: the ceiling is the loudest nearby bin's level.
+        ceiling = maximum_filter1d(np.percentile(context, 90, axis=1), 5, mode="nearest")[:, None] * 10 ** (margin_db / 20)
         local = np.minimum(1.0, ceiling / np.maximum(mag[:, a:b], 1e-12))
         gain[:, a:b] = np.minimum(gain[:, a:b], local)
     gain = uniform_filter(gain, size=(3, 5), mode="nearest")
@@ -238,8 +286,11 @@ def ride_curve(audio: np.ndarray, sample_rate: int, range_db: float = 4.0, windo
 
 
 def detect_in_file(path, sensitivity: float = 0.5, kinds: set[str] | None = None, block_s: float = 60.0,
-                   overlap_s: float = 10.0, progress=lambda fraction: None) -> list[EffectEvent]:
-    """Run :func:`detect_effects` over a whole stored stem in overlapping blocks."""
+                   overlap_s: float = 10.0, progress=lambda fraction: None, music_paths=()) -> list[EffectEvent]:
+    """Run :func:`detect_effects` over a whole stored crowd stem in overlapping blocks.
+
+    ``music_paths``: the music stems, summed as the guard against bleed.
+    """
     from .audio_io import SAMPLE_RATE, read_stem, stem_frames
 
     total = stem_frames(path)
@@ -249,7 +300,8 @@ def detect_in_file(path, sensitivity: float = 0.5, kinds: set[str] | None = None
         lo = max(0, start - int(overlap_s * SAMPLE_RATE))
         hi = min(total, start + step + int(overlap_s * SAMPLE_RATE))
         offset = lo / SAMPLE_RATE
-        for e in detect_effects(read_stem(path, lo, hi), SAMPLE_RATE, sensitivity):
+        music = np.sum([read_stem(m, lo, hi) for m in music_paths], axis=0) if music_paths else None
+        for e in detect_effects(read_stem(path, lo, hi), SAMPLE_RATE, sensitivity, music):
             e = EffectEvent(e.kind, e.start + offset, e.end + offset, e.strength_db)
             # Keep events that start inside this block's own span; the overlap only gives context.
             if start / SAMPLE_RATE <= e.start < (start + step) / SAMPLE_RATE and (kinds is None or e.kind in kinds):

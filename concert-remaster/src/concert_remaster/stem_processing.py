@@ -186,10 +186,11 @@ PROFILES: dict[str, StemProfile] = {
 
 
 PROFILES["lead_vocals"] = PROFILES["vocals"]
-# Drum-kit pieces are export-only; they get a light clean-up like the whole kit.
-for _piece in ("kick", "snare", "toms", "hihat", "ride", "crash"):
+# Drum-kit pieces, for exports and for mixing the kit piece by piece: a light clean-up like
+# the whole kit, and typical studio levels relative to the lead vocal.
+for _piece, _balance in (("kick", -5.0), ("snare", -6.0), ("toms", -10.0), ("hihat", -12.0), ("ride", -13.0), ("crash", -12.0)):
     PROFILES[_piece] = StemProfile(highpass_hz=30.0 if _piece in ("kick", "toms") else 150.0, expander_range_db=30.0,
-                                   expander_ratio=1.8, balance_db=-8.0)
+                                   expander_ratio=1.8, balance_db=_balance)
 
 
 def profile_for(stem: str, overrides: dict[str, StemProfile] | None = None) -> StemProfile:

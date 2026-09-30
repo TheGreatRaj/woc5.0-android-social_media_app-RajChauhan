@@ -1,64 +1,7 @@
 // Concert Remaster front end: plain ES modules, no build step, no internet.
 
-const $ = (sel, root = document) => root.querySelector(sel);
-
-function el(tag, attrs = {}, ...children) {
-  const node = document.createElement(tag);
-  for (const [key, value] of Object.entries(attrs || {})) {
-    if (value === undefined || value === null || value === false) continue;
-    if (key === "class") node.className = value;
-    else if (key === "style") node.style.cssText = value;
-    else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
-    else if (key === "html") node.innerHTML = value;
-    else if (value === true) node.setAttribute(key, "");
-    else node.setAttribute(key, value);
-  }
-  for (const child of children.flat()) {
-    if (child === null || child === undefined || child === false) continue;
-    node.append(child instanceof Node ? child : document.createTextNode(String(child)));
-  }
-  return node;
-}
-
-async function api(path, { method = "GET", body } = {}) {
-  const res = await fetch(path, {
-    method,
-    headers: body !== undefined ? { "Content-Type": "application/json" } : {},
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
-  if (!res.ok) {
-    let detail = res.statusText;
-    try { detail = (await res.json()).detail || detail; } catch { /* not JSON */ }
-    throw new Error(detail);
-  }
-  const type = res.headers.get("content-type") || "";
-  return type.includes("application/json") ? res.json() : res.blob();
-}
-
-function toast(message, error = false) {
-  const t = $("#toast");
-  t.textContent = message;
-  t.className = "toast show" + (error ? " error" : "");
-  clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => (t.className = "toast"), error ? 6000 : 2800);
-}
-
-async function guarded(fn) {
-  try { return await fn(); } catch (e) { toast(e.message || String(e), true); }
-}
-
-const fmtTime = (s) => {
-  if (s == null || !isFinite(s)) return "–";
-  s = Math.max(0, Math.round(s));
-  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
-  return h ? `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}` : `${m}:${String(sec).padStart(2, "0")}`;
-};
-const parseTime = (text) => {
-  const parts = String(text).trim().split(":").map(Number);
-  if (parts.some(isNaN)) return null;
-  return parts.reduce((acc, p) => acc * 60 + p, 0);
-};
-const fmtSize = (b) => (b > 1e9 ? `${(b / 1e9).toFixed(1)} GB` : b > 1e6 ? `${(b / 1e6).toFixed(1)} MB` : `${Math.round(b / 1e3)} kB`);
+import { $, el, api, toast, guarded, fmtTime, fmtSize } from "./util.js";
+import { renderStudio, stopStudio, drawShowEffects } from "./daw.js";
 
 const KIND_LABEL = { song: "Song", interlude: "Interlude", talk: "Artist talking", crowd: "Applause", silence: "Silence" };
 const KIND_COLOR = { song: "#8b5cf6", interlude: "#a78bfa", talk: "#f59e0b", crowd: "#10b981", silence: "#475569" };
@@ -70,7 +13,7 @@ const ACTIONS = {
 
 const state = {
   info: null, schema: null, projects: [], current: null, peaks: null,
-  selected: null, poll: null, saveTimer: null, lastStatus: null, playing: null,
+  selected: null, poll: null, saveTimer: null, lastStatus: null, playing: null, tab: "studio",
 };
 
 // --- boot -------------------------------------------------------------------------------
@@ -123,6 +66,7 @@ function renderSidebar() {
 }
 
 function renderEmpty() {
+  stopStudio();
   state.current = null;
   $("#main").replaceChildren(el("div", { class: "empty" },
     el("h1", {}, "Make your concert recordings sound like the record"),
@@ -138,6 +82,7 @@ function renderEmpty() {
 
 async function selectProject(id) {
   stopPolling();
+  stopStudio();
   state.selected = null;
   state.peaks = null;
   await loadProject(id);
@@ -184,18 +129,106 @@ function renderProject() {
         el("button", { class: "btn ghost danger", onclick: deleteProject, disabled: p.running }, "Delete"))),
     renderSteps(p));
   const parts = [header, renderProgress(p)];
+  let studio = false;
   if (p.segments?.length) {
-    parts.push(renderTimelineCard(p), renderSegmentsCard(p));
+    parts.push(renderTimelineCard(p), renderTabs(p));
     const seg = p.segments.find((s) => s.id === state.selected);
-    if (seg) parts.push(seg.kind === "song" || seg.kind === "interlude" ? renderSongPanel(seg) : renderOtherPanel(seg));
-    parts.push(renderExportCard(p));
+    const isSong = seg && (seg.kind === "song" || seg.kind === "interlude");
+    if (state.tab === "studio") {
+      if (isSong) {
+        studio = true;
+        parts.push(renderStudio({
+          base: projectUrl(), projectId: p.id, seg, busy: anyRunning(), runTask, playPreview,
+          saveSegment: saveSegmentQuietly, copyMixToAll,
+        }), renderSongPanel(seg));
+      } else if (seg) parts.push(renderOtherPanel(seg));
+    } else if (state.tab === "parts") {
+      parts.push(renderSegmentsCard(p));
+      if (seg) parts.push(isSong ? renderSongPanel(seg) : renderOtherPanel(seg));
+    } else parts.push(renderStyleCard(p), renderExportCard(p));
   } else if (!p.running) {
     parts.push(el("div", { class: "card" }, el("h3", {}, "Analyze"),
       el("p", { class: "muted" }, "Separates every instrument with the AI models, finds the songs, the artist's talking and the applause, and identifies each song. Long shows take a while; you can stop at any time and continue later."),
       el("button", { class: "btn primary", disabled: busy, onclick: () => runTask("analyze") }, p.stages.length ? "Continue analysis" : "Start analysis")));
   }
+  if (!studio) stopStudio();
   main.replaceChildren(...parts.filter(Boolean));
   if (p.segments?.length) setupTimeline();
+}
+
+function renderTabs(p) {
+  const songs = p.segments.filter((s) => s.kind === "song").length;
+  const tab = (id, label, sub) => el("button", { class: "ptab" + (state.tab === id ? " active" : ""), onclick: () => { state.tab = id; renderProject(); } },
+    el("b", {}, label), el("span", {}, sub));
+  const seg = p.segments.find((s) => s.id === state.selected);
+  return el("div", { class: "ptabs" },
+    tab("studio", "Studio", seg && (seg.kind === "song" || seg.kind === "interlude") ? `${seg.track ? seg.track + ". " : ""}${seg.title || "Song"}` : "pick a song on the timeline"),
+    tab("parts", "Songs & parts", `${songs} songs · ${p.segments.length} parts`),
+    tab("export", "Sound & export", p.exported ? "files ready" : "style, formats, stems"),
+    el("span", { class: "spacer" }),
+    el("div", { class: "song-nav" },
+      el("button", { class: "btn small ghost", title: "Previous song", onclick: () => stepSong(-1) }, "‹ Prev"),
+      el("button", { class: "btn small ghost", title: "Next song", onclick: () => stepSong(1) }, "Next ›")));
+}
+
+function stepSong(dir) {
+  const songs = state.current.segments.filter((s) => s.kind === "song" || s.kind === "interlude");
+  if (!songs.length) return;
+  const i = songs.findIndex((s) => s.id === state.selected);
+  const next = songs[i < 0 ? 0 : (i + dir + songs.length) % songs.length];
+  state.tab = state.tab === "export" ? "studio" : state.tab;
+  selectSegment(next.id);
+}
+
+async function saveSegmentQuietly(seg, rerender = false) {
+  // Mixer moves are saved without redrawing the page, so playback continues.
+  await guarded(async () => {
+    const segs = await api(projectUrl("/segments"), { method: "PUT", body: state.current.segments });
+    state.current.segments = segs;
+    if (rerender) renderProject();
+  });
+}
+
+async function copyMixToAll(seg) {
+  const songs = state.current.segments.filter((s) => (s.kind === "song" || s.kind === "interlude") && s.id !== seg.id);
+  for (const s of songs) {
+    s.stem_gains = { ...(seg.stem_gains || {}) };
+    s.stem_pans = { ...(seg.stem_pans || {}) };
+    s.stem_mutes = { ...(seg.stem_mutes || {}) };
+  }
+  await saveSegmentQuietly(seg);
+  toast(`Mix copied to ${songs.length} other song${songs.length === 1 ? "" : "s"}`);
+}
+
+function renderStyleCard(p) {
+  const styles = state.schema.styles || {};
+  const fx = p.settings.effects || {};
+  const setFx = (key, value) => { p.settings.effects[key] = value; saveProjectSettings(); };
+  return el("div", { class: "card" },
+    el("h3", {}, "Sound"),
+    el("div", { class: "style-cards" }, ...Object.entries(styles).map(([name, text]) =>
+      el("button", { class: "style-card", onclick: () => applyStyle(p, name) },
+        el("b", {}, { soundboard: "Soundboard", studio: "Studio record", live_album: "Live album" }[name] || name),
+        el("span", {}, text)))),
+    el("div", { class: "row wrap", style: "gap:18px;margin-top:14px" },
+      el("label", { class: "row" }, "Stage effects ",
+        el("select", { style: "width:auto", onchange: (e) => setFx("action", e.target.value) },
+          ...[["remove", "remove"], ["reduce", "reduce"], ["keep", "keep"]].map(([v, l]) => el("option", { value: v, selected: fx.action === v }, l)))),
+      el("label", { class: "check" }, el("input", { type: "checkbox", checked: !!fx.co2, onchange: (e) => setFx("co2", e.target.checked) }), "💨 CO2 / smoke"),
+      el("label", { class: "check" }, el("input", { type: "checkbox", checked: !!fx.fireworks, onchange: (e) => setFx("fireworks", e.target.checked) }), "🎆 Fireworks"),
+      el("label", { class: "check" }, el("input", { type: "checkbox", checked: !!fx.confetti, onchange: (e) => setFx("confetti", e.target.checked) }), "🎊 Confetti"),
+      el("label", { class: "check" }, el("input", { type: "checkbox", checked: !!fx.level_riding, onchange: (e) => setFx("level_riding", e.target.checked) }), "Keep the level steady"),
+      el("label", { class: "check" }, el("input", { type: "checkbox", checked: !!p.settings.crowd.keep_in_songs, onchange: (e) => { p.settings.crowd.keep_in_songs = e.target.checked; saveProjectSettings(); } }), "Audience in songs")),
+    el("p", { class: "muted small" }, `${(p.effects || []).length} stage effects were found in the show. Detection runs during analysis; the effect types above apply to the next analysis or “Re-detect”.`));
+}
+
+async function applyStyle(p, name) {
+  const updated = await guarded(() => api("/api/style", { method: "POST", body: { settings: p.settings, style: name } }));
+  if (!updated) return;
+  p.settings = updated;
+  await saveProjectSettings();
+  toast(`Sound set to ${name.replace("_", " ")}`);
+  renderProject();
 }
 
 function renderSteps(p) {
@@ -426,6 +459,7 @@ class Timeline {
       ctx.fillRect(x, h - 16, 1, 4);
       ctx.fillText(fmtTime(t), x + 3, h - 4);
     }
+    drawShowEffects(ctx, state.current?.effects, (t) => this.xAt(t), 0);
     for (const [t, color] of [[this.cursor, "#22d3ee"], [this.playhead, "#f472b6"]]) {
       if (t == null) continue;
       const x = this.xAt(t);
@@ -542,50 +576,27 @@ function mixStemNames() {
 }
 
 function renderSongPanel(seg) {
-  const gains = seg.stem_gains || {};
-  const names = mixStemNames();
-  const offset = { value: 0 };
-  const mixer = el("div", { class: "mixer" }, ...names.map((name) => {
-    const muted = gains[name] !== undefined && gains[name] <= -60;
-    const value = muted ? 0 : gains[name] || 0;
-    const label = el("span", { class: "val" }, `${value > 0 ? "+" : ""}${value.toFixed(1)} dB`);
-    return el("div", { class: "mixer-row" },
-      el("span", { class: "name" }, name.replace("_", " ")),
-      el("input", { type: "range", min: -12, max: 12, step: 0.5, value, oninput: (e) => { label.textContent = `${e.target.value > 0 ? "+" : ""}${Number(e.target.value).toFixed(1)} dB`; },
-        onchange: (e) => { seg.stem_gains = { ...(seg.stem_gains || {}), [name]: Number(e.target.value) }; segmentsChanged(); } }),
-      label,
-      el("button", { class: "mute" + (muted ? " on" : ""), title: "Mute this instrument in this song", onclick: () => { seg.stem_gains = { ...(seg.stem_gains || {}), [name]: muted ? 0 : -120 }; segmentsChanged(); } }, "M"));
-  }));
-  const dur = seg.end - seg.start;
-  const start = el("input", { type: "range", min: 0, max: Math.max(0, dur - 5), step: 1, value: 0, oninput: (e) => { offset.value = Number(e.target.value); startLabel.textContent = fmtTime(offset.value); } });
-  const startLabel = el("span", { class: "muted small" }, "0:00");
   const ident = seg.identification || {};
   const ref = seg.reference;
   return el("div", { class: "card" },
     el("div", { class: "card-head" }, el("h3", {}, `Song ${seg.track ?? ""}: ${seg.title || ""}`),
-      el("button", { class: "btn small", onclick: () => mergeWithNext(seg) }, "Merge with next part")),
-    el("div", { class: "song-panel" },
-      el("div", {},
-        el("div", { class: "muted small", style: "margin-bottom:8px" }, "Extra level per instrument for this song, on top of the automatic mix."),
-        mixer,
-        el("div", { class: "row wrap", style: "margin-top:14px" },
-          el("span", { class: "muted small" }, "Listen from"), start, startLabel),
-        el("div", { class: "row wrap", style: "margin-top:8px" },
-          el("button", { class: "btn", onclick: () => playRange("source", seg.start + offset.value, 30) }, "▶ Original"),
-          el("button", { class: "btn", onclick: () => playRange(names.join("+"), seg.start + offset.value, 30) }, "▶ Separated, unprocessed"),
-          el("button", { class: "btn primary", onclick: () => playPreview(seg, offset.value) }, "▶ Remastered preview"))),
-      el("div", { class: "ref-box" },
-        el("b", {}, "Studio reference"),
-        el("p", { class: "muted small" }, ref
-          ? `Tone and balance follow “${ref.title}”${ref.artist ? " by " + ref.artist : ""} (${ref.source}${ref.preview ? ", 30 s preview" : ""}).`
-          : ident.message || "No reference: the song gets the AI clean-up and a generic studio balance."),
-        (ident.candidates || []).length ? el("ul", { class: "candidates" }, ...ident.candidates.slice(0, 5).map((c) => el("li", {}, `${Math.round(c.score * 100)}% · ${c.title} – ${c.artist} (${c.source})`))) : null,
-        ident.lyrics ? el("p", { class: "muted small" }, `Heard: “${ident.lyrics.slice(0, 160)}…”`) : null,
-        el("div", { class: "row wrap", style: "margin-top:10px" },
-          el("button", { class: "btn small", disabled: anyRunning(), onclick: () => runTask("identify", [seg.id]) }, "Identify again"),
-          el("button", { class: "btn small", onclick: () => setReference(seg, "file") }, "Use a file…"),
-          el("button", { class: "btn small", onclick: () => setReference(seg, "url") }, "Use a link…"),
-          ref ? el("button", { class: "btn small ghost", onclick: () => setReference(seg, "clear") }, "No reference") : null))));
+      el("div", { class: "row" },
+        el("button", { class: "btn small", onclick: () => { state.tab = "studio"; renderProject(); }, disabled: state.tab === "studio" }, "Open in studio"),
+        el("button", { class: "btn small", onclick: () => mergeWithNext(seg) }, "Merge with next part"))),
+    el("div", { class: "ref-box" },
+      el("b", {}, "Studio reference"),
+      el("p", { class: "muted small" }, ref
+        ? `Tone and balance follow “${ref.title}”${ref.artist ? " by " + ref.artist : ""} (${ref.source}${ref.preview ? ", 30 s preview" : ""}).`
+        : ident.message || "No reference: the song gets the AI clean-up and a generic studio balance."),
+      (ident.candidates || []).length ? el("ul", { class: "candidates" }, ...ident.candidates.slice(0, 5).map((c) => el("li", {}, `${Math.round(c.score * 100)}% · ${c.title} – ${c.artist} (${c.source})`))) : null,
+      ident.lyrics ? el("p", { class: "muted small" }, `Heard: “${ident.lyrics.slice(0, 160)}…”`) : null,
+      el("div", { class: "row wrap", style: "margin-top:10px" },
+        el("button", { class: "btn small", disabled: anyRunning(), onclick: () => runTask("identify", [seg.id]) }, "Identify again"),
+        el("button", { class: "btn small", onclick: () => setReference(seg, "file") }, "Use a file…"),
+        el("button", { class: "btn small", onclick: () => setReference(seg, "url") }, "Use a link…"),
+        ref ? el("button", { class: "btn small ghost", onclick: () => setReference(seg, "clear") }, "No reference") : null,
+        el("span", { class: "spacer" }),
+        el("button", { class: "btn small ghost", onclick: () => playRange("source", seg.start, Math.min(30, seg.end - seg.start)) }, "▶ Original (30 s)"))));
 }
 
 function renderOtherPanel(seg) {
@@ -617,33 +628,62 @@ async function setReference(seg, how) {
   await guarded(async () => { await api(projectUrl("/reference"), { method: "POST", body }); await loadProject(state.current.id); toast("Reference updated"); });
 }
 
-// --- audio -----------------------------------------------------------------------------------
+// --- audio: everything plays through the app's own engine -----------------------------------
 
-async function playRange(stem, start, seconds) {
-  const player = $("#player");
-  if (state.playing === `${stem}@${start}` && !player.paused) { player.pause(); state.playing = null; return; }
-  player.src = `${projectUrl("/audio")}?stem=${encodeURIComponent(stem)}&start=${start.toFixed(2)}&end=${(start + seconds).toFixed(2)}`;
-  state.playing = `${stem}@${start}`;
-  trackPlayhead(start);
-  await player.play().catch((e) => toast("Could not play: " + e.message, true));
+async function player(body) {
+  try {
+    const status = await api("/api/player", { method: "POST", body });
+    showNowPlaying(status);
+    return status;
+  } catch (e) {
+    toast(e.message, true);
+    return null;
+  }
+}
+
+async function playRange(stem, start, seconds, label) {
+  const now = state.nowPlaying;
+  const same = now?.playing && now.kind === "clip" && now.info?.project === state.current.id && Math.abs(now.start - start) < 0.01;
+  if (same) { player({ cmd: "pause" }); return; }
+  await player({ cmd: "clip", project: state.current.id, stems: stem.split("+"), start, end: start + seconds,
+    label: label || (stem === "source" ? "Original recording" : stem.replace(/_/g, " ")) });
 }
 
 async function playPreview(seg, offset) {
-  toast("Rendering a 30-second preview…");
-  const blob = await guarded(() => api(projectUrl("/preview"), { method: "POST", body: { segment: seg.id, start: offset, seconds: 30 } }));
-  if (!blob) return;
-  const player = $("#player");
-  player.src = URL.createObjectURL(blob);
-  state.playing = "preview";
-  trackPlayhead(seg.start + offset);
-  player.play();
+  toast("Rendering 30 seconds with the full export chain…");
+  const status = await guarded(() => api(projectUrl("/preview"), { method: "POST", body: { segment: seg.id, start: offset, seconds: 30 } }));
+  if (status) showNowPlaying(status);
 }
 
-function trackPlayhead(start) {
-  const player = $("#player");
-  player.ontimeupdate = () => { if (timeline) { timeline.playhead = start + player.currentTime; timeline.draw(); } };
-  player.onended = player.onpause = () => { if (timeline) { timeline.playhead = null; timeline.draw(); } };
+function playOutput(f) {
+  player({ cmd: "file", project: state.current.id, path: f.path });
 }
+
+// The bar at the top: what the engine is playing, from anywhere in the app.
+function showNowPlaying(status) {
+  state.nowPlaying = status;
+  const bar = $("#now-playing");
+  if (!bar) return;
+  const active = status?.loaded && (status.playing || status.kind !== "song");
+  bar.classList.toggle("show", !!active);
+  if (active) {
+    const pos = status.position - (status.kind === "file" ? 0 : status.start);
+    bar.replaceChildren(
+      el("button", { class: "icon-btn", title: status.playing ? "Pause" : "Play", onclick: () => player({ cmd: status.playing ? "pause" : "play" }) }, status.playing ? "⏸" : "▶"),
+      el("span", { class: "np-label" }, status.info?.label || ""),
+      el("span", { class: "np-time" }, `${fmtTime(pos)} / ${fmtTime(status.end - status.start)}`),
+      el("button", { class: "icon-btn", title: "Stop", onclick: () => player({ cmd: "stop" }) }, "⏹"));
+  }
+  if (timeline) {
+    const onShow = status?.playing && status.kind !== "file" && status.info?.project === state.current?.id;
+    const head = onShow ? status.position : null;
+    if (head !== timeline.playhead) { timeline.playhead = head; timeline.draw(); }
+  }
+}
+
+setInterval(async () => {
+  try { showNowPlaying(await api("/api/player")); } catch { /* engine restarting */ }
+}, 250);
 
 // --- export ---------------------------------------------------------------------------------
 
@@ -669,9 +709,8 @@ function renderExportCard(p) {
     outputs.length ? el("div", { class: "outputs" }, ...Object.entries(folders).flatMap(([folder, files]) => [
       el("div", { class: "output-folder" }, folder === "." ? "Main" : folder),
       ...files.map((f) => el("div", { class: "output-row" },
-        /\.(flac|wav|mp3)$/i.test(f.name) ? el("button", { class: "icon-btn", onclick: () => { const pl = $("#player"); pl.src = f.url; pl.play(); } }, "▶") : el("span", { style: "width:26px" }),
+        /\.(flac|wav|mp3)$/i.test(f.name) ? el("button", { class: "icon-btn", title: "Play", onclick: () => playOutput(f) }, "▶") : el("span", { style: "width:26px" }),
         el("span", { class: "fname", title: f.full_path }, f.name), el("span", { class: "muted small" }, fmtSize(f.size)),
-        el("a", { class: "icon-btn", href: f.url, download: f.name }, "⤓"),
         el("button", { class: "icon-btn", title: "Show in folder", onclick: () => guarded(() => api("/api/open", { method: "POST", body: { path: f.full_path } })) }, "📂")))]))
       : el("p", { class: "muted small" }, "Nothing exported yet."));
 }

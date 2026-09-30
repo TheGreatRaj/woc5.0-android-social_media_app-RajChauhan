@@ -331,14 +331,20 @@ def stem_aliases(passes: list[PassSpec]) -> dict[str, str]:
 MIX_STEMS = ("vocals", "lead_vocals", "backing_vocals", "drums", "bass", "guitar", "piano", "woodwinds", "other")
 
 
-def mix_stems(aliases: dict[str, str]) -> list[str]:
+KIT_STEMS = ("kick", "snare", "toms", "hihat", "ride", "crash")
+
+
+def mix_stems(aliases: dict[str, str], drum_kit: bool = False) -> list[str]:
     names = [n for n in MIX_STEMS if n in aliases]
     if "lead_vocals" in names:
         names.remove("vocals")  # lead + backing replace the combined vocal
+    if drum_kit and "drums" in names and all(k in aliases for k in KIT_STEMS):
+        i = names.index("drums")
+        names[i:i + 1] = list(KIT_STEMS)  # every drum on its own mixer track
     return names
 
 
-EXPORT_STEMS = MIX_STEMS + ("kick", "snare", "toms", "hihat", "ride", "crash", "crowd")
+EXPORT_STEMS = MIX_STEMS + KIT_STEMS + ("crowd",)
 
 
 def all_models(models: ModelSettings) -> list[str]:

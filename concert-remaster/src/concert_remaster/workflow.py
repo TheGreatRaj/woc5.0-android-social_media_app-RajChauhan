@@ -33,6 +33,7 @@ STAGE_LABELS = {
     "segments": "Finding songs and speech",
     "identify": "Identifying songs",
     "render": "Mixing and mastering",
+    "studio": "Preparing mixer tracks",
 }
 # Share of an analysis run each step takes, for one overall progress bar.
 _WEIGHTS = {"source": 0.02, "separation": 0.85, "segments": 0.03, "identify": 0.10}
@@ -50,6 +51,7 @@ class Job:
         self.task: str | None = None  # what the app should resume if this run stops
         self.started = time.time()
         self._stage_started: dict[str, float] = {}
+        self._fraction: dict[str, float] = {}
 
     @property
     def backend(self) -> SeparationBackend:
@@ -128,8 +130,9 @@ class Job:
         if not project.has_stem("crowd") or not kinds:
             events = []
         else:
+            music = [project.stem_path(n) for n in mix_stems(project.state.get("aliases", {})) if project.has_stem(n)]
             events = [e.as_dict() for e in detect_in_file(
-                project.stem_path("crowd"), s.sensitivity, kinds,
+                project.stem_path("crowd"), s.sensitivity, kinds, music_paths=music,
                 progress=lambda f: report and report("segments", 0.8 + 0.2 * f, "Listening for fireworks, CO2 and confetti"),
             )]
         project.update(lambda state: state.__setitem__("effects", events))
@@ -249,24 +252,50 @@ class Job:
         project.update(lambda state: state.__setitem__("segments", segments))
         return [seg for seg in segments if seg["kind"] == "song"]
 
+    def _guide(self, seg: dict, stage: str):
+        """The studio original of a song, split into stems when per-stem matching is on."""
+        s = self.project.settings
+        ref = seg.get("reference")
+        if not (s.reference.tone_match and ref and Path(ref.get("path", "")).exists()):
+            return None
+        self._check()
+        self.progress(stage, self._fraction.get(stage, 0.0), f"Preparing studio reference for {seg.get('title') or seg['id']}")
+        return load_guide(ref, self.backend if s.reference.per_stem else None, s.models.instrument_model, s.reference.per_stem)
+
     def export(self) -> dict:
         from .render import render_project
 
         project = self.project
         project.reload()
-        s = project.settings
         guides = {}
-        if s.reference.tone_match:
-            for seg in project.state.get("segments") or []:
-                ref = seg.get("reference")
-                if seg["kind"] == "song" and seg.get("include", True) and ref and Path(ref.get("path", "")).exists():
-                    self._check()
-                    self.progress("render", 0.0, f"Preparing studio reference for {seg['title']}")
-                    guides[seg["id"]] = load_guide(ref, self.backend if s.reference.per_stem else None,
-                                                   s.models.instrument_model, s.reference.per_stem)
+        for seg in project.state.get("segments") or []:
+            if seg["kind"] == "song" and seg.get("include", True):
+                guide = self._guide(seg, "render")
+                if guide is not None:
+                    guides[seg["id"]] = guide
         report = render_project(project, lambda st, f, m: self.progress("render", f, m), self.cancel, guides)
         self.finish("Export finished")
         return report
+
+    def prepare_studio(self, only: list[str] | None = None) -> list[str]:
+        """Render the mixer tracks of every song (or ``only`` these) that needs it."""
+        from . import studio
+
+        project = self.project
+        project.reload()
+        songs = [seg for seg in project.state.get("segments") or []
+                 if seg["kind"] in ("song", "interlude") and (only is None or seg["id"] in only)
+                 and (only is not None or seg.get("include", True))]
+        todo = [seg for seg in songs if studio.status(project, seg) != "ready"]
+        done: list[str] = []
+        for i, seg in enumerate(todo):
+            self._check()
+            self._fraction["studio"] = i / max(1, len(todo))
+            guide = self._guide(seg, "studio")
+            self.progress("studio", i / max(1, len(todo)), f"Mixer tracks for {seg.get('title') or seg['id']} ({i + 1}/{len(todo)})")
+            studio.prepare(project, seg, guide)
+            done.append(seg["id"])
+        return done
 
     def run_all(self) -> dict:
         self.analyze()

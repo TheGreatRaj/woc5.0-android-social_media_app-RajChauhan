@@ -26,7 +26,10 @@ dependencies = [
 cpu = ["audio-separator[cpu]>=0.40"]
 gpu = ["audio-separator[gpu]>=0.40"]
 dml = ["audio-separator[dml]>=0.40"]
-app = ["fastapi>=0.110", "uvicorn>=0.29", "faster-whisper>=1.0", "yt-dlp[default]>=2025.10", "shazamio>=0.7", "deno>=2.0"]
+# The desktop app: its window (WebView2 on Windows), audio output (PortAudio/WASAPI), speech
+# recognition, and the optional online song lookup (Shazam, YouTube).
+app = ["fastapi>=0.110", "uvicorn>=0.29", "sounddevice>=0.5", "pywebview>=5.0; sys_platform == 'win32' or sys_platform == 'darwin'",
+       "faster-whisper>=1.0", "yt-dlp[default]>=2025.10", "shazamio>=0.7", "deno>=2.0"]
 dev = ["pytest>=7", "httpx>=0.27"]
 
 [project.scripts]

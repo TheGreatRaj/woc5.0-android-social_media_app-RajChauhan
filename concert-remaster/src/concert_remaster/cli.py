@@ -68,8 +68,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     worker = sub.add_parser("worker", help=argparse.SUPPRESS)
     worker.add_argument("project", type=Path)
-    worker.add_argument("task", choices=["analyze", "redetect", "identify", "export", "all"])
-    worker.add_argument("--only", nargs="*", help="segment ids for identify")
+    worker.add_argument("task", choices=["analyze", "redetect", "identify", "studio", "export", "all"])
+    worker.add_argument("--only", nargs="*", help="segment ids for identify / studio")
 
     sub.add_parser("presets", help="list quality presets and their models")
     sub.add_parser("devices", help="show the processing devices that will be used")
@@ -197,6 +197,9 @@ def run_worker(project_dir: Path, task: str, only: list[str] | None) -> int:
         elif task == "identify":
             job.identify(only=only)
             job.finish("Identification finished")
+        elif task == "studio":
+            job.prepare_studio(only=only)
+            job.finish("Mixer tracks ready")
         elif task == "export":
             job.export()
         else:

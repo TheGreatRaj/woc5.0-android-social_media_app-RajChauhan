@@ -159,3 +159,58 @@ def test_analysis_stores_detected_effects(tmp_path, show_file, fake_backend):  #
     settings.effects.co2 = settings.effects.fireworks = settings.effects.confetti = False
     project.set_settings(settings)
     assert job.detect_effects() == [] and project.state["effects"] == []
+
+
+def test_repair_leaves_music_alone_when_the_crowd_stem_has_music_bleed():
+    # Real crowd stems always carry some of the music; a (mis)detected event over plain
+    # music must not cancel the music itself.
+    rng = np.random.default_rng(6)
+    seconds = 16
+    music = _song(seconds, rng)
+    crowd = _audience(seconds, rng) * 0.3 + music * 0.08
+    event = EffectEvent("co2", 6.0, 9.0, 12.0)
+    fixed = repair(music, SR, [event], reference=crowd)
+    span = slice(int(6.2 * SR), int(8.8 * SR))
+    level = 10 * np.log10(np.mean(fixed[:, span] ** 2) / np.mean(music[:, span] ** 2))
+    assert abs(level) < 1.0
+    err = 10 * np.log10(np.mean((fixed[:, span] - music[:, span]) ** 2) / np.mean(music[:, span] ** 2))
+    assert err < -15
+
+
+def test_repair_still_removes_a_jet_when_the_crowd_stem_has_music_bleed():
+    rng = np.random.default_rng(7)
+    seconds = 16
+    music = _song(seconds, rng)
+    jet = place(seconds, [(6, co2_jet(3.0, 0.3, rng))])
+    crowd = _audience(seconds, rng) + jet + music * 0.08
+    leak = ss.sosfilt(ss.butter(2, 2000, "highpass", fs=SR, output="sos"), jet, axis=-1).astype(np.float32) * 0.5
+    stem = music + leak
+    fixed = repair(stem, SR, [EffectEvent("co2", 5.9, 9.3, 20.0)], reference=crowd)
+    span = slice(int(6.2 * SR), int(8.8 * SR))
+
+    def err_db(x):
+        return 10 * np.log10(np.mean((x[:, span] - music[:, span]) ** 2) / np.mean(music[:, span] ** 2))
+
+    assert err_db(fixed) < err_db(stem) - 8
+    assert abs(10 * np.log10(np.mean(fixed[:, span] ** 2) / np.mean(music[:, span] ** 2))) < 1.5
+
+
+def _kick_track(seconds, rng):
+    t = np.arange(int(seconds * SR)) / SR
+    kick = np.zeros(t.size)
+    for start in range(0, t.size - SR // 4, SR // 2):  # four-on-the-floor at 120 bpm
+        n = SR // 4
+        kick[start:start + n] += np.sin(2 * np.pi * 55 * np.arange(n) / SR) * np.exp(-np.arange(n) / (0.12 * SR)) * 0.8
+    bass = 0.15 * np.sin(2 * np.pi * 41 * t) * (np.sin(2 * np.pi * 0.25 * t) > 0)
+    return np.stack([kick + bass] * 2).astype(np.float32)
+
+
+def test_music_bleed_in_the_crowd_stem_is_not_an_effect():
+    rng = np.random.default_rng(8)
+    music = _kick_track(40, rng) + _song(40, rng)
+    crowd = _audience(40, rng) * 0.3 + music * 0.1  # kick and bass bleed into the crowd stem
+    assert detect_effects(crowd, SR, music=music) == []
+    # ... while a real firework on top still stands out from the music.
+    boom = place(40, [(20, firework(2.5, 0.3, rng))])
+    found = detect_effects(crowd + boom, SR, music=music)
+    assert "firework" in _kinds_near(found, 20.2)

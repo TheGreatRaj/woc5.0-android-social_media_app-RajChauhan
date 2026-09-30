@@ -5,9 +5,10 @@ the released album: crowd noise and venue echo removed, every instrument separat
 each song found, named and matched to the tone of its studio version, then mixed and mastered.
 Built for whole concerts: 2–3 hour MP3/MP4/M4A recordings, bands or DJ sets.
 
-**All the processing runs on your own PC** with local AI models (NVIDIA via CUDA, AMD via DirectML,
-or the CPU). The internet is only used, if you allow it, to look songs up and fetch their studio
-versions, which are then kept locally.
+**It is a desktop program that runs entirely on your own PC**: local AI models (NVIDIA via CUDA, AMD
+via DirectML, or the CPU), its own window, and its own audio engine that plays through your sound
+card. The internet is only used, if you allow it, to look songs up and fetch their studio versions for
+comparison, which are then kept locally.
 
 ## Install on Windows (one time)
 
@@ -35,11 +36,23 @@ the 14400F CPU automatically, which is much slower.
    do when the artist talks. Analysis starts.
 2. **Analyze** runs on its own; you can close the window or press Stop at any time. Every finished
    piece is kept, so pressing Continue later picks up where it stopped (even after a restart).
-3. **Review** the timeline: songs (purple), the artist talking (amber), applause (green). Drag the
-   edges, split or merge parts, fix titles, choose per part what happens (keep the talk with a clearer
-   voice, cut it, or mute the voice but keep the music under it), set extra levels per instrument,
-   and listen: original, separated, or a 30-second **remastered preview**.
-4. **Export**. You get:
+3. **Review** the timeline: songs (purple), the artist talking (amber), applause (green), stage
+   effects (orange marks). Drag the edges, split or merge parts, fix titles, and choose per part
+   what happens (keep the talk with a clearer voice, cut it, or mute the voice but keep the music
+   under it).
+4. **Mix in the Studio**: every song opens as a multitrack session, one track per instrument
+   (lead vocal, backing vocals, drums or each drum, bass, guitar, keys, winds, synths, audience),
+   with waveforms, stage-effect markers and a mixing desk: faders, pan, mute, solo and level meters.
+   The app's audio engine plays the tracks through your sound card, sample-locked, and every move is
+   heard at once and saved with the song; the export uses exactly that mix.
+   - **Original / AI stems / Studio** switches what you hear: the recording, the raw separated
+     instruments, or the *studio tracks* (effect-free, cleaned, EQ'd, compressed and balanced, the
+     way the export processes them). Prepare the studio tracks per song or for all songs at once.
+   - Drag on the ruler to loop a section; **Hear the export** renders 30 s with the full mastering
+     chain; **Use this mix for all songs** copies your balance to the whole show.
+5. **Sound & export**: pick a sound (*Soundboard*: like the mixing desk's own recording,
+   *Studio record*: closest to the album, *Live album*: audience kept in), whether stage effects are
+   removed, reduced or kept, and the formats. You get:
 
 ```
 projects/<show>/output/
@@ -52,6 +65,17 @@ projects/<show>/output/
   <show> - Full Concert.srt                what the artist said, as subtitles
   Artist speech.txt, report.json
 ```
+
+### Stage effects (CO2 jets, fireworks, confetti) and a steady level
+
+Festival recordings are full of CO2/smoke jets, pyro booms and confetti cannons. After separation
+they sit mostly in the audience stem, with some leak in the music stems. The app finds them by their
+shape (a smooth noise jet, a low boom with a long decay, an instant pop that dies away) and only when
+they jump out of the music, so drums and bass that bleed into the audience stem are never mistaken
+for them. Each instrument is then repaired: the leaked effect is cancelled against the audience stem,
+and every frequency is held to the level the instrument had around the effect, so nothing is muted.
+Finally a slow level rider evens out dips and bumps (removed effects, a phone's auto-gain) without
+flattening builds and drops. Choose *remove*, *reduce* or *keep* for the whole show or per song.
 
 **Every parameter** is adjustable in **Settings** (per project, or as defaults for new projects):
 hardware, every AI model, restoration, song/speech detection, speech handling, audience, song
@@ -72,6 +96,7 @@ identification, studio-reference matching, mix, mastering, export, and the full 
 | Identify | Offline: your music folder and every original fetched before. Online (optional): Shazam, Whisper-transcribed lyrics, iTunes/Deezer/YouTube search. Every candidate must pass a key- and tempo-independent melody match before it's used |
 | Studio tone | The original is separated the same way; each live instrument is EQ-matched to its studio counterpart and the mix balance copies the record. Nothing from the studio audio is mixed in: the performance stays 100% live |
 | Per instrument | Expander (bleed and room wash down), corrective + tone EQ, level-relative compression, de-esser, mono low end, width, plate reverb on the now-dry vocal; recreated top octave for band-limited recordings (e.g. a watch) |
+| Stage effects | Detected on the audience stem against the music (see above); cancelled and clamped per instrument; level riding |
 | Master | Glue compression, tonal balance (or the studio reference's), true-peak look-ahead limiter; −14 LUFS / −1 dBTP by default, and it stops short rather than crushing a song |
 
 Long jobs run in chunks with crossfaded overlaps and are saved piece by piece, so a crash, a closed

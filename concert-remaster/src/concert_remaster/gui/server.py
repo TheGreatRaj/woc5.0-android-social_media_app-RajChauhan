@@ -9,8 +9,6 @@ stopped job continues where it left off.
 from __future__ import annotations
 
 import hashlib
-import io
-import json
 import logging
 import os
 import shutil
@@ -148,7 +146,7 @@ class JobManager:
 
 def create_app():
     from fastapi import Body, FastAPI, HTTPException
-    from fastapi.responses import FileResponse, JSONResponse, Response
+    from fastapi.responses import FileResponse, JSONResponse
     from fastapi.staticfiles import StaticFiles
 
     app = FastAPI(title="Concert Remaster", docs_url=None, redoc_url=None)
@@ -185,6 +183,11 @@ def create_app():
         s = settings_mod.from_dict(data.get("settings"))
         return settings_mod.to_dict(settings_mod.apply_preset(s, data["preset"]))
 
+    @app.post("/api/style")
+    def style(data: dict = Body(...)):
+        s = settings_mod.from_dict(data.get("settings"))
+        return settings_mod.to_dict(settings_mod.apply_style(s, data["style"]))
+
     @app.post("/api/browse")
     def browse(data: dict = Body(default={})):
         return {"path": native_dialog(data.get("kind", "file"), data.get("title", ""))}
@@ -216,8 +219,9 @@ def create_app():
     def project_detail(project_id: str):
         project = get(project_id)
         return {**project_summary(project, jobs), "segments": project.state.get("segments", []),
-                "settings": project.state.get("settings"), "render": project.state.get("render"),
-                "aliases": project.state.get("aliases", {}), "outputs": list_outputs(project)}
+                "settings": settings_mod.to_dict(project.settings), "render": project.state.get("render"),
+                "aliases": project.state.get("aliases", {}), "outputs": list_outputs(project),
+                "effects": project.state.get("effects", [])}
 
     @app.delete("/api/projects/{project_id}")
     def delete(project_id: str, keep_outputs: bool = True):
@@ -254,8 +258,11 @@ def create_app():
     def run_task(project_id: str, data: dict = Body(...)):
         project = get(project_id)
         task = data.get("task", "analyze")
-        if task not in ("analyze", "redetect", "identify", "export", "all"):
+        if task not in ("analyze", "redetect", "identify", "studio", "export", "all"):
             raise HTTPException(400, "Unknown task")
+        from ..playback import get_player
+
+        get_player().release(project_id)  # the job may rewrite files that are playing
         try:
             jobs.start(project, task, data.get("only"))
         except RuntimeError as exc:
@@ -273,30 +280,45 @@ def create_app():
         return {**project.read_progress(), "running": jobs.running_for(project_id)}
 
     @app.get("/api/projects/{project_id}/peaks")
-    def peaks(project_id: str):
+    def peaks(project_id: str, stem: str = "", start: float = 0.0, end: float = 0.0, rate: int = 20,
+              source: str = "raw", seg: str = ""):
         project = get(project_id)
-        if not project.has_stem("source"):
-            return {"rate": 0, "peaks": []}
-        return {"rate": PEAKS_PER_SECOND, "peaks": waveform_peaks(project).round(3).tolist()}
+        if not stem:
+            if not project.has_stem("source"):
+                return {"rate": 0, "peaks": []}
+            return {"rate": PEAKS_PER_SECOND, "peaks": waveform_peaks(project).round(3).tolist()}
+        path, offset = track_file(project, stem, source, seg)
+        return {"rate": rate, "peaks": range_peaks(path, start - offset, end - offset, rate)}
 
-    @app.get("/api/projects/{project_id}/audio")
-    def audio(project_id: str, stem: str = "source", start: float = 0.0, end: float = 30.0):
-        project = get(project_id)
-        end = min(end, start + 600.0)
-        names = [n for n in stem.split("+") if n]
-        a, b = int(start * SAMPLE_RATE), int(end * SAMPLE_RATE)
-        parts = [read_stem(project.stem_path(n), a, b) for n in names if project.has_stem(n)]
-        if not parts:
-            raise HTTPException(404, "Stem not available yet")
-        return Response(wav_bytes(np.sum(parts, axis=0)), media_type="audio/wav")
+    @app.get("/api/projects/{project_id}/tracks/{seg_id}")
+    def tracks(project_id: str, seg_id: str):
+        return mixer_tracks(get(project_id), seg_id)
 
     @app.post("/api/projects/{project_id}/preview")
     def preview(project_id: str, data: dict = Body(...)):
+        """Render a stretch of a song with the full export chain and play it."""
+        from ..playback import ArrayTrack, Channel, Session
+
         project = get(project_id)
         if data.get("settings"):
             project.set_settings(settings_mod.from_dict(data["settings"]))
+        seg = next(s for s in project.state.get("segments", []) if s["id"] == data["segment"])
+        start = seg["start"] + float(data.get("start", 0))
         audio_data = render_preview(project, data["segment"], float(data.get("start", 0)), float(data.get("seconds", 30)))
-        return Response(wav_bytes(audio_data), media_type="audio/wav")
+        session = Session("preview", start, start + audio_data.shape[-1] / SAMPLE_RATE,
+                          {"export": Channel(ArrayTrack(audio_data, start))},
+                          {"project": project_id, "seg": seg["id"], "label": f"Export preview · {seg.get('title') or 'song'}"})
+        return player_load(session, master=1.0)
+
+    @app.get("/api/player")
+    def player_status():
+        from ..playback import get_player
+
+        return get_player().status()
+
+    @app.post("/api/player")
+    def player_command(data: dict = Body(...)):
+        return player_control(data, get)
 
     @app.post("/api/projects/{project_id}/reference")
     def set_reference(project_id: str, data: dict = Body(...)):
@@ -339,6 +361,186 @@ def create_app():
 PEAKS_PER_SECOND = 10
 
 
+def player_load(session, master: float | None = None, position: float | None = None, play: bool | None = True,
+                loop=None) -> dict:
+    from fastapi import HTTPException
+
+    from ..playback import AudioUnavailable, get_player
+
+    player = get_player()
+    player.set_loop(*(loop or (False,)))
+    try:
+        player.load(session, position=position, play=play)
+        if master is not None:
+            player.set_mix(master=master)
+    except AudioUnavailable as exc:
+        raise HTTPException(503, str(exc))
+    return player.status()
+
+
+def player_control(data: dict, get) -> dict:
+    """Commands from the window to the audio engine."""
+    import soundfile as sf
+    from fastapi import HTTPException
+
+    from ..playback import AudioUnavailable, Channel, FileTrack, Session, get_player
+
+    player = get_player()
+    cmd = data.get("cmd")
+    if cmd == "song":
+        project = get(data["project"])
+        session = song_session(project, data["seg"], data.get("source", "raw"), data.get("gains") or {}, data.get("pans") or {})
+        loop = (bool(data.get("loop")), *(data.get("loop_range") or (None, None)))
+        return player_load(session, master=data.get("master", 1.0), position=data.get("position"),
+                           play=data.get("play"), loop=loop)
+    if cmd == "clip":
+        project = get(data["project"])
+        stems = [n for n in data.get("stems") or ["source"] if project.has_stem(n)]
+        if not stems:
+            raise HTTPException(404, "Nothing to play yet")
+        start = max(0.0, float(data.get("start", 0)))
+        end = min(project.duration, float(data.get("end", start + 30)))
+        session = Session("clip", start, end, {n: Channel(FileTrack(project.stem_path(n))) for n in stems},
+                          {"project": data["project"], "label": data.get("label") or "Original recording"})
+        return player_load(session, master=1.0)
+    if cmd == "file":
+        project = get(data["project"])
+        path = (project.output_dir / data["path"]).resolve()
+        if project.output_dir.resolve() not in path.parents or not path.is_file():
+            raise HTTPException(404, "Not found")
+        duration = sf.info(str(path)).duration
+        session = Session("file", 0.0, duration, {"file": Channel(FileTrack(path, stored_stem=False))},
+                          {"project": data["project"], "label": path.name})
+        return player_load(session, master=1.0)
+    try:
+        if cmd == "play":
+            player.play(data.get("position"))
+        elif cmd == "pause":
+            player.pause()
+        elif cmd == "stop":
+            player.stop()
+        elif cmd == "seek":
+            player.seek(float(data["position"]))
+        elif cmd == "mix":
+            player.set_mix(data.get("gains"), data.get("pans"), data.get("master"))
+        elif cmd == "loop":
+            player.set_loop(bool(data.get("on")), data.get("start"), data.get("end"))
+        else:
+            raise HTTPException(400, f"Unknown player command {cmd!r}")
+    except AudioUnavailable as exc:
+        raise HTTPException(503, str(exc))
+    return player.status()
+
+
+def song_session(project: Project, seg_id: str, source: str, gains: dict, pans: dict):
+    """A song's tracks for the mixer: the original, the raw AI stems or the studio tracks."""
+    from fastapi import HTTPException
+
+    from .. import studio
+    from ..playback import Channel, FileTrack, Session
+    from ..separation import mix_stems
+
+    seg = next((s for s in project.state.get("segments", []) if s["id"] == seg_id), None)
+    if seg is None:
+        raise HTTPException(404, "No such part")
+    if source == "original":
+        files = {"source": (project.stem_path("source"), 0.0)}
+    elif source == "studio":
+        meta = studio.read_meta(project, seg_id)
+        if meta is None:
+            raise HTTPException(404, "Studio tracks are not prepared for this song")
+        files = {n: (studio.track_path(project, seg_id, n), float(meta["start"])) for n in meta["tracks"]}
+    else:
+        names = mix_stems(project.state.get("aliases", {}), project.settings.mix.drum_kit)
+        names += ["crowd"] if project.has_stem("crowd") else []
+        files = {n: (project.stem_path(n), 0.0) for n in names if project.has_stem(n)}
+    channels = {n: Channel(FileTrack(path, offset), gain=float(gains.get(n, 1.0)), pan=float(pans.get(n, 0.0)))
+                for n, (path, offset) in files.items() if path.is_file()}
+    end = min(seg["end"], project.duration)
+    return Session("song", seg["start"], end, channels,
+                   {"project": project.root.name, "seg": seg_id, "source": source,
+                    "label": f"{seg.get('track') or ''} {seg.get('title') or 'Song'}".strip()})
+
+
+def track_file(project: Project, stem: str, source: str, seg_id: str) -> tuple[Path, float]:
+    """The file behind a mixer track, and the show time its first frame belongs to."""
+    from fastapi import HTTPException
+
+    from .. import studio
+
+    if source == "studio":
+        meta = studio.read_meta(project, seg_id)
+        path = studio.track_path(project, seg_id, stem)
+        if meta is None or not path.is_file():
+            raise HTTPException(404, "Studio tracks are not prepared for this song")
+        return path, float(meta["start"])
+    if not project.has_stem(stem):
+        raise HTTPException(404, f"No {stem} track")
+    return project.stem_path(stem), 0.0
+
+
+_PEAK_CACHE: dict[tuple, list] = {}
+
+
+def range_peaks(path: Path, start: float, end: float, rate: int) -> list[float]:
+    """Peak level per 1/``rate`` s of a stretch of a track (not normalised: quiet tracks look quiet)."""
+    rate = max(1, min(200, rate))
+    key = (str(path), path.stat().st_mtime, round(start, 2), round(end, 2), rate)
+    if key in _PEAK_CACHE:
+        return _PEAK_CACHE[key]
+    a, b = max(0, int(start * SAMPLE_RATE)), max(0, int(end * SAMPLE_RATE))
+    hop = SAMPLE_RATE // rate
+    out: list[np.ndarray] = []
+    for block_start in range(a, b, hop * 3000):
+        block = read_stem(path, block_start, min(b, block_start + hop * 3000))
+        mono = np.abs(block).max(axis=0) if block.size else np.zeros(0)
+        n = -(-mono.size // hop)
+        if n:
+            mono = np.pad(mono, (0, n * hop - mono.size))
+            out.append(mono.reshape(n, hop).max(axis=1))
+    peaks = np.round(np.concatenate(out), 3).tolist() if out else []
+    if len(_PEAK_CACHE) > 256:
+        _PEAK_CACHE.clear()
+    _PEAK_CACHE[key] = peaks
+    return peaks
+
+
+def mixer_tracks(project: Project, seg_id: str) -> dict:
+    """Everything the app's mixer needs for one song: tracks, fader states, stage effects."""
+    from fastapi import HTTPException
+
+    from .. import studio
+    from ..render import track_state
+    from ..separation import mix_stems
+
+    seg = next((s for s in project.state.get("segments", []) if s["id"] == seg_id), None)
+    if seg is None:
+        raise HTTPException(404, "No such part")
+    settings = project.settings
+    raw = mix_stems(project.state.get("aliases", {}), settings.mix.drum_kit)
+    raw += ["crowd"] if project.has_stem("crowd") else []
+    state = studio.status(project, seg, settings)
+    meta = studio.read_meta(project, seg_id) or {}
+    names = list(dict.fromkeys(raw + meta.get("tracks", [])))
+    effects = [e for e in project.state.get("effects") or [] if e["end"] > seg["start"] and e["start"] < seg["end"]]
+    return {
+        "segment": seg_id,
+        "start": seg["start"],
+        "end": seg["end"],
+        "raw_tracks": raw,
+        "studio_tracks": meta.get("tracks", []),
+        "studio": state,
+        "studio_key": meta.get("key"),
+        "tracks": {n: {**track_state(n, seg, settings), "auto_gain_db": meta.get("auto_gains_db", {}).get(n, 0.0),
+                       "empty": n in meta.get("empty", [])} for n in names},
+        "monitor_gain_db": {"raw": studio.raw_monitor_gain_db(project, seg, [n for n in raw if n != "crowd"], settings),
+                            "studio": meta.get("monitor_gain_db", 0.0)},
+        "effects": effects,
+        "fx_action": seg.get("fx_action") or "",
+        "default_fx_action": settings.effects.action,
+    }
+
+
 def waveform_peaks(project: Project) -> np.ndarray:
     """Peak level per 0.1 s of the whole show, cached."""
     cache = project.work_dir / "analysis" / "peaks.npy"
@@ -361,17 +563,6 @@ def waveform_peaks(project: Project) -> np.ndarray:
     return peaks
 
 
-def wav_bytes(audio: np.ndarray, sample_rate: int = SAMPLE_RATE) -> bytes:
-    import soundfile as sf
-
-    peak = float(np.abs(audio).max()) if audio.size else 0.0
-    if peak > 0.99:
-        audio = audio * (0.99 / peak)
-    buffer = io.BytesIO()
-    sf.write(buffer, np.asarray(audio, dtype=np.float32).T, sample_rate, format="WAV", subtype="PCM_16")
-    return buffer.getvalue()
-
-
 def render_preview(project: Project, segment_id: str, start: float, seconds: float) -> np.ndarray:
     """Render a short stretch of one song with the current settings, for A/B listening."""
     from ..reference import load_guide
@@ -386,9 +577,9 @@ def render_preview(project: Project, segment_id: str, start: float, seconds: flo
     ref = seg.get("reference")
     if ref and settings.reference.tone_match and Path(ref.get("path", "")).exists():
         guide = load_guide(ref, None, settings.models.instrument_model, False)  # cached stems are used if present
-    audio, _, _ = _render_song(project, seg, mix_stems(project.state["aliases"]), settings, guide,
+    audio, _, _ = _render_song(project, seg, mix_stems(project.state["aliases"], settings.mix.drum_kit), settings, guide,
                                _restore_cutoff(project, settings), a, b)
-    return audio
+    return audio if audio is not None else np.zeros((2, max(0, b - a)), dtype=np.float32)
 
 
 def set_manual_reference(project: Project, data: dict) -> dict:
@@ -474,13 +665,62 @@ def open_app_window(url: str) -> None:
     webbrowser.open(url)
 
 
+def desktop_window(url: str) -> bool:
+    """Show the app in its own desktop window (WebView2 on Windows). Returns when it is closed."""
+    try:
+        import webview
+    except ImportError:
+        return False
+    try:
+        webview.create_window("Concert Remaster", url, width=1560, height=980, min_size=(1100, 720),
+                              background_color="#0d0f14")
+        webview.start(gui="edgechromium" if os.name == "nt" else None, private_mode=False,
+                      storage_path=str(app_root() / "window"))
+        return True
+    except Exception as exc:
+        log.warning("Desktop window unavailable (%s); opening an app window instead", exc)
+        return False
+
+
 def run(host: str = "127.0.0.1", port: int = 8765, open_window: bool = True) -> None:
+    """Start the local engine (reachable only from this PC) and open the app window."""
     import uvicorn
+
+    from ..playback import get_player
 
     ensure_ffmpeg()
     projects_dir().mkdir(parents=True, exist_ok=True)
     url = f"http://{host}:{port}/"
-    if open_window:
-        threading.Timer(1.2, open_app_window, args=(url,)).start()
-    print(f"Concert Remaster is running at {url}  (close this window to quit)")
-    uvicorn.run(create_app(), host=host, port=port, log_level="warning")
+    app = create_app()
+    server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="warning"))
+    if not open_window:
+        print(f"Concert Remaster engine running at {url}")
+        server.run()
+        return
+    thread = threading.Thread(target=server.run, daemon=True, name="engine")
+    thread.start()
+    for _ in range(300):
+        if server.started or not thread.is_alive():
+            break
+        time.sleep(0.05)
+    if not thread.is_alive():
+        raise SystemExit(f"Could not start: port {port} is in use (is Concert Remaster already open?)")
+    try:
+        if not desktop_window(url):
+            open_app_window(url)
+            print("Concert Remaster is running. Close this window to quit.")
+            while thread.is_alive():
+                thread.join(1.0)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        jobs = app.state.jobs
+        if jobs.project_id and jobs.is_running():
+            # Stop the running job cleanly; it continues from where it left off next time.
+            try:
+                jobs.stop(open_project(jobs.project_id))
+            except Exception:
+                log.exception("Could not stop the running job")
+        get_player().close()
+        server.should_exit = True
+        thread.join(5)
