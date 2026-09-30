@@ -404,3 +404,103 @@ def split_by_identity(start: float, end: float, windows: list[dict], min_song_se
                                          "message": f"Identified in {len(run)} windows" if best["key"] else "Not identified",
                                          "candidates": []}})
     return songs
+
+
+def confident_spans(windows: list[dict], strong: float = 0.7, max_gap: int = 2) -> list[dict]:
+    """Stretches of a set where one track was clearly heard.
+
+    Windows naming the same track, with at most ``max_gap`` unknown windows between
+    them, form a span; a span counts when at least two windows agree or one matched
+    very strongly (``strong``). Lone weak matches are ignored as noise.
+    """
+    spans: list[dict] = []
+    current: dict | None = None
+    gap = 0
+    for w in windows:
+        if w["key"] is None:
+            gap += 1
+            if current is not None and gap > max_gap:
+                spans.append(current)
+                current = None
+            continue
+        if current is not None and current["key"] == w["key"]:
+            current["windows"].append(w)
+        else:
+            if current is not None:
+                spans.append(current)
+            current = {"key": w["key"], "windows": [w]}
+        gap = 0
+    if current is not None:
+        spans.append(current)
+    out = []
+    for span in spans:
+        ws = span["windows"]
+        best = max(ws, key=lambda w: w["score"])
+        if len(ws) >= 2 or best["score"] >= strong:
+            out.append({"key": span["key"], "first": (ws[0]["start"] + ws[0]["end"]) / 2,
+                        "last": (ws[-1]["start"] + ws[-1]["end"]) / 2, "count": len(ws), "best": best})
+    # The same track heard again right after an interruption is one span.
+    merged: list[dict] = []
+    for span in out:
+        if merged and merged[-1]["key"] == span["key"]:
+            prev = merged[-1]
+            prev.update(last=span["last"], count=prev["count"] + span["count"],
+                        best=max(prev["best"], span["best"], key=lambda w: w["score"]))
+        else:
+            merged.append(span)
+    return merged
+
+
+def label_by_identity(start: float, end: float, windows: list[dict], boundaries: list[float],
+                      min_song_seconds: float, strong: float = 0.7) -> list[dict] | None:
+    """When only part of a set was identified: name what was, keep the rest as unknown songs.
+
+    ``boundaries`` are the existing (novelty-based) song changes. Changes are added
+    between two different identified tracks that have none between them, and removed
+    inside a stretch where one track was clearly playing throughout.
+    """
+    spans = confident_spans(windows, strong)
+    if not spans:
+        return None
+    cuts = sorted(t for t in boundaries if start < t < end)
+    for a, b in zip(spans, spans[1:]):
+        if a["key"] != b["key"] and not any(a["last"] <= t <= b["first"] for t in cuts):
+            cuts.append((a["last"] + b["first"]) / 2)
+    # A long unidentified stretch next to a known track holds other music: end the known
+    # track shortly after it was last heard (and start the next one shortly before).
+    long_gap = 2 * min_song_seconds
+    edges = [{"last": start - long_gap}, *spans, {"first": end + long_gap}]
+    for a, b in zip(edges, edges[1:]):
+        if b["first"] - a["last"] <= long_gap:
+            continue
+        if "key" in a and not any(a["last"] < t <= a["last"] + min_song_seconds for t in cuts):
+            cuts.append(a["last"] + 10.0)
+        if "key" in b and not any(b["first"] - min_song_seconds <= t < b["first"] for t in cuts):
+            cuts.append(b["first"] - 10.0)
+    cuts = sorted(t for t in cuts if not any(sp["first"] < t < sp["last"] for sp in spans))
+    edges = [start, *cuts, end]
+    parts = [[a, b] for a, b in zip(edges, edges[1:]) if b > a]
+    # Parts shorter than a song join their shorter neighbour.
+    while len(parts) > 1:
+        short = [i for i, (a, b) in enumerate(parts) if b - a < min_song_seconds]
+        if not short:
+            break
+        i = short[0]
+        if i == 0 or (i < len(parts) - 1 and parts[i + 1][1] - parts[i + 1][0] < parts[i - 1][1] - parts[i - 1][0]):
+            parts[i + 1][0] = parts[i][0]
+        else:
+            parts[i - 1][1] = parts[i][1]
+        del parts[i]
+    songs = []
+    for a, b in parts:
+        overlap = [(min(b, sp["last"] + 10) - max(a, sp["first"] - 10), sp) for sp in spans]
+        size, span = max(overlap, key=lambda x: x[0])
+        seg = {"kind": "song", "start": round(a, 2), "end": round(b, 2), "title": "", "artist": "", "reference": None,
+               "identification": None}
+        if size >= min(20.0, 0.3 * (b - a)):
+            best = span["best"]
+            seg.update(title=best["title"], artist=best["artist"], reference=best["reference"],
+                       identification={"score": best["score"], "method": "set windows", "candidates": [],
+                                       "message": f"Heard in {span['count']} windows"})
+        songs.append(seg)
+    return songs

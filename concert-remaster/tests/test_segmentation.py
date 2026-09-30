@@ -124,3 +124,35 @@ def test_split_by_identity_gives_up_when_little_is_known():
     windows = [{"start": i * 10.0, "end": i * 10.0 + 20, "key": None, "title": "", "artist": "", "score": 0.0, "reference": None}
                for i in range(10)]
     assert split_by_identity(0.0, 110.0, windows, 15) is None
+
+
+def _windows(labels, hop=10.0, window=20.0):
+    out = []
+    for i, label in enumerate(labels):
+        key, score = (label if isinstance(label, tuple) else (label, 0.6)) if label else (None, 0.0)
+        out.append({"start": i * hop, "end": i * hop + window, "key": key, "title": key.upper() if key else "",
+                    "artist": "DJ" if key else "", "score": score, "reference": {"key": key} if key else None})
+    return out
+
+
+def test_confident_spans_ignore_lone_weak_matches():
+    from concert_remaster.segmentation import confident_spans
+
+    ws = _windows(["a", "a", None, "a", None, None, None, ("x", 0.5), None, ("y", 0.8), "b", "b", "b"])
+    spans = confident_spans(ws)
+    assert [(s["key"], s["count"]) for s in spans] == [("a", 3), ("y", 1), ("b", 3)]
+
+
+def test_partial_identification_names_what_it_can_and_keeps_the_rest():
+    from concert_remaster.segmentation import label_by_identity
+
+    # 0-60 s track a, 60-150 s unknown, 150-240 s track b. Novelty found a (wrong) cut at 30 s
+    # inside a, and one at 100 s in the unknown part.
+    labels = ["a"] * 5 + [None] * 10 + ["b"] * 8
+    songs = label_by_identity(0.0, 240.0, _windows(labels), [30.0, 100.0], min_song_seconds=40)
+    # a ends ~10 s after it was last heard; the unknown stretch keeps the novelty cut at 100 s.
+    assert [s["title"] for s in songs] == ["A", "", "", "B"]
+    assert songs[0]["start"] == 0 and songs[0]["end"] == 60        # the cut at 30 s inside a is gone
+    assert songs[1]["end"] == 100 and songs[3]["start"] == 150 and songs[3]["end"] == 240
+    assert songs[3]["identification"]["method"] == "set windows"
+    assert label_by_identity(0.0, 100.0, _windows([None] * 9), [], 40) is None

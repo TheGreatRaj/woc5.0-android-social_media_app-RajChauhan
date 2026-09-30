@@ -209,7 +209,7 @@ class Job:
     def _identify_continuous(self, project: Project, library, catalog, names, report, done, total) -> list[dict] | None:
         """DJ sets / medleys: identify windows along each continuous stretch and split where the track changes."""
         from .identify import identify_windows
-        from .segmentation import split_by_identity
+        from .segmentation import label_by_identity, split_by_identity
 
         s = project.settings
         segments = project.state.get("segments") or []
@@ -239,6 +239,9 @@ class Job:
             windows = identify_windows(read, start, end, libraries, s.identify.min_match_score,
                                        progress=lambda f: report("identify", done / total, f"Following the set: {_clock(start + f * (end - start))}"))
             songs = split_by_identity(start, end, windows, s.segmentation.min_song_seconds)
+            if not songs:  # too little identified to split by: name what was, keep the rest
+                songs = label_by_identity(start, end, windows, [seg["start"] for seg in region[1:]],
+                                          s.segmentation.min_song_seconds)
             if not songs:
                 continue
             ids = {seg["id"] for seg in region}
